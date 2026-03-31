@@ -2,7 +2,7 @@
 
 ## Abstract
 
-VRI is a generation-layer trust model for AI-generated voice artifacts. It combines audio watermarking, deterministic cryptographic signatures, and append-only ledger registration to support provenance verification by independent parties. The protocol is designed to operate at the output boundary of synthesis systems through an Inference Adapter that enforces watermarking, signing, and proof-carrying output.
+VRI is a generation-layer trust model for AI-generated voice artifacts. It combines audio watermarking, deterministic cryptographic signatures, and append-only ledger registration to provide cryptographic traceability at the inference boundary. The protocol is designed to operate at the output boundary of synthesis systems through an Inference Adapter that enforces watermarking, signing, and proof-carrying output.
 
 This whitepaper explains the motivation, system model, trust model, and operating assumptions behind VRI Protocol v1.0. It is explanatory rather than normative.
 
@@ -24,14 +24,14 @@ This whitepaper does not introduce additional protocol requirements and does not
 
 ## 1. Problem Statement
 
-AI voice synthesis makes high-quality voice generation broadly accessible, but provenance remains difficult to establish after an artifact leaves the generation boundary. The practical problems are:
+AI voice synthesis makes high-quality voice generation broadly accessible, but traceability remains difficult to establish after an artifact leaves the generation boundary. The practical problems are:
 
 1. attribution of generated artifacts to a signing key,
 2. reproducible integrity checks over emitted artifacts,
 3. time ordering of recorded generation events,
 4. separation of cryptographic proof from probabilistic forensic signals.
 
-VRI does not solve every problem in voice misuse. It does not prevent cloning, imitation, or resynthesis. It aims to make protocol-participating artifacts easier to attribute and verify.
+VRI does not solve every problem in voice misuse. It does not prevent cloning, imitation, or resynthesis. It aims to make protocol-participating artifacts easier to trace, attribute, and verify.
 
 ---
 
@@ -60,7 +60,7 @@ VRI is not a fully decentralized system. The ledger is not a source of truth by 
 
 ### 3.1 Watermark
 
-The watermark is signal-bound provenance evidence embedded into the audio. In VRI Protocol v1.0, the baseline Watermark Payload is 64 bits:
+The watermark is signal-bound traceability evidence embedded into the audio. In VRI Protocol v1.0, the baseline Watermark Payload is 64 bits:
 
 ```text
 [creator_id: 32 bits] [timestamp: 24 bits] [nonce: 8 bits]
@@ -194,4 +194,4 @@ It does not claim to ship a production deployment of watermarking, ledger servic
 
 ## 9. Conclusion
 
-VRI Protocol v1.0 defines a generation-layer approach to provenance for AI-generated voice artifacts. Its security model relies on deterministic signing of Canonical Audio-derived evidence, signal-bound watermarking, and append-only ledger ordering. Its trust model is intentionally limited and explicit: provenance claims are strongest when watermark, signature, and ledger evidence agree, and weaker when only a subset is available.
+VRI Protocol v1.0 defines a generation-layer approach to cryptographic traceability for AI-generated voice artifacts. Its security model relies on deterministic signing of Canonical Audio-derived evidence, signal-bound watermarking, and append-only ledger ordering. Its trust model is intentionally limited and explicit: traceability claims are strongest when watermark, signature, and ledger evidence agree, and weaker when only a subset is available.

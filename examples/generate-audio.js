@@ -1,6 +1,141 @@
 /**
- * VRI Example: Generate AI Voice with Watermark
- * 
- * This example demonstrates how to generate an AI voice using a TTS model
- * and have it automatically watermarked and signed by VRI.
- */\n\nconst fetch = require('node-fetch');\nconst fs = require('fs');\n\n// Initialize VRI client\nconst VRI_API_KEY = process.env.VRI_API_KEY;\nconst VRI_API_URL = 'https://api.vri.app/v1';\n\nasync function generateVoiceWithWatermark() {\n  // Step 1: Request voice generation\n  // Your unique voice ID (registered with VRI)\n  const voiceId = 'voice_jane_creator_xyz';\n  \n  // Text to synthesize\n  const text = `Welcome to our product. This is an AI-generated voice \n                powered by voice rights infrastructure.`;\n  \n  console.log('[1/4] Requesting voice generation with watermark...');\n  \n  const generateResponse = await fetch(`${VRI_API_URL}/generate`, {\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${VRI_API_KEY}`,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({\n      text,\n      voice_id: voiceId,\n      model: 'openai-tts',\n      model_params: {\n        voice: 'nova',\n        speed: 1.0\n      },\n      metadata: {\n        campaign: 'product-launch',\n        platform: 'youtube',\n        license: 'cc-by-4.0',\n        commercial_use: true\n      },\n      quality: 'high'\n    })\n  });\n  \n  if (!generateResponse.ok) {\n    throw new Error(`Generation failed: ${generateResponse.statusText}`);\n  }\n  \n  const generateResult = await generateResponse.json();\n  \n  console.log('✓ Voice generated successfully');\n  console.log(`  Audio URL: ${generateResult.audio_url}`);\n  console.log(`  Duration: ${generateResult.audio_duration_seconds}s`);\n  console.log(`  Watermark SNR: ${generateResult.watermark.quality.snr_db}dB`);\n  console.log(`  Watermark confidence: ${(generateResult.watermark.quality.confidence * 100).toFixed(1)}%`);\n  \n  // Step 2: Download watermarked audio\n  console.log('\\n[2/4] Downloading watermarked audio...');\n  \n  const audioBuffer = await downloadAudio(generateResult.audio_url);\n  fs.writeFileSync('output_watermarked.wav', audioBuffer);\n  \n  console.log('✓ Audio saved to output_watermarked.wav');\n  \n  // Step 3: Extract proof package\n  console.log('\\n[3/4] Extracting cryptographic proof package...');\n  \n  const proofPackage = generateResult.proof_package;\n  \n  console.log(`✓ Proof package generated`);\n  console.log(`  Creator ID: ${proofPackage.creator.public_key}`);\n  console.log(`  Signature: ${proofPackage.signature.value.substring(0, 32)}...`);\n  console.log(`  Ledger anchor: ${proofPackage.ledger.anchor}`);\n  \n  // Step 4: Save proof package (for later verification)\n  console.log('\\n[4/4] Saving proof package...');\n  \n  fs.writeFileSync(\n    'proof_package.json',\n    JSON.stringify(proofPackage, null, 2)\n  );\n  \n  console.log('✓ Proof package saved to proof_package.json');\n  \n  console.log('\\n════════════════════════════════════════════════════');\n  console.log('Voice generation complete!');\n  console.log('════════════════════════════════════════════════════');\n  console.log(`\nNext steps:\n`);\n  console.log(`1. Deploy the watermarked audio to your platform`);\n  console.log(`   (YouTube, Spotify, podcast hosting, etc.)\\n`);\n  console.log(`2. Keep proof_package.json for verification later\\n`);\n  console.log(`3. VRI will track usage and deposit royalties to your wallet\\n`);\n  console.log(`4. Request payouts via the VRI dashboard\\n`);\n  \n  return {\n    audioPath: 'output_watermarked.wav',\n    proofPath: 'proof_package.json',\n    metadata: {\n      voiceId,\n      createdAt: new Date().toISOString(),\n      creator: proofPackage.creator.public_key,\n      watermarkPayload: proofPackage.watermark.payload\n    }\n  };\n}\n\nasync function downloadAudio(audioUrl) {\n  /**\n   * Downloads audio from URL\n   */\n  const response = await fetch(audioUrl);\n  \n  if (!response.ok) {\n    throw new Error(`Download failed: ${response.statusText}`);\n  }\n  \n  return await response.buffer();\n}\n\n// Example: Run local verification\nasync function verifyLocalAudio() {\n  /**\n   * Demonstrates local (offline) verification of watermark signature\n   * Uses proof package saved from generation\n   */\n  \n  console.log('\\n═══════════════════════════════════════════════════');\n  console.log('Local Verification Example');\n  console.log('═══════════════════════════════════════════════════\\n');\n  \n  // Load proof package\n  const proofPackage = JSON.parse(\n    fs.readFileSync('proof_package.json', 'utf-8')\n  );\n  \n  console.log('[1] Proof Package Contents:');\n  console.log(`  Watermark payload: ${proofPackage.watermark.payload_hex}`);\n  console.log(`  Creator public key: ${proofPackage.creator.public_key}`);\n  console.log(`  Signature: ${proofPackage.signature.value.substring(0, 64)}...`);\n  console.log(`  Algorithm: ${proofPackage.signature.algorithm}`);\n  console.log(`  Timestamp: ${new Date(proofPackage.watermark.timestamp * 1000).toISOString()}`);\n  \n  // Note: Full verification requires extracting watermark from audio,\n  // which requires DSP (librosa/scipy in Python).\n  // JavaScript doesn't have good STFT libraries, so we skip the extraction step.\n  \n  console.log('\\n[2] Proof Package Validation:');\n  console.log(`  ✓ Version: ${proofPackage.version}`);\n  console.log(`  ✓ Signature algorithm: ${proofPackage.signature.algorithm}`);\n  console.log(`  ✓ Curve: ${proofPackage.signature.curve}`);\n  console.log(`  ✓ Ledger anchored: ${proofPackage.ledger.anchor && 'Yes' || 'No'}`);\n  console.log(`  ✓ Blockchain confirmed: ${proofPackage.ledger.blockchain_confirmed && 'Yes' || 'No'}`);\n  \n  console.log('\\n[3] Full Verification Requires:');\n  console.log(`  • Watermark extraction from audio (DSP - STFT analysis)`);\n  console.log(`  • EdDSA signature verification`);\n  console.log(`  • Ledger lookup (optional)\\n`);\n  console.log('  → Use VRI API POST /verify for complete verification\\n');\n}\n\n// Main\nif (require.main === module) {\n  (async () => {\n    try {\n      if (!VRI_API_KEY) {\n        console.error('Error: VRI_API_KEY environment variable not set');\n        console.error('Set it with: export VRI_API_KEY=\"your-api-key\"');\n        process.exit(1);\n      }\n      \n      // Generate voice with watermark\n      await generateVoiceWithWatermark();\n      \n      // Show local verification example\n      await verifyLocalAudio();\n      \n    } catch (error) {\n      console.error('Error:', error.message);\n      process.exit(1);\n    }\n  })();\n}\n\nmodule.exports = { generateVoiceWithWatermark, verifyLocalAudio };\n
+ * VRI Example: Generate a proof-carrying audio artifact.
+ *
+ * This example is illustrative. It shows how a generation request could
+ * be submitted to a VRI-enabled generation system and how the returned
+ * proof package could be stored for later verification.
+ */
+
+const fetch = require('node-fetch');
+const fs = require('fs');
+
+const VRI_API_KEY = process.env.VRI_API_KEY;
+const VRI_API_URL = 'https://api.vri.app/v1';
+
+async function generateVoiceWithWatermark() {
+  const voiceId = 'voice_ref_001';
+  const text = 'This is a reference VRI synthesis request.';
+
+  console.log('[1/4] Requesting voice generation with proof-carrying output...');
+
+  const generateResponse = await fetch(`${VRI_API_URL}/generate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${VRI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      text,
+      voice_id: voiceId,
+      model: 'openai-tts',
+      model_params: {
+        voice: 'nova',
+        speed: 1.0,
+      },
+      metadata: {
+        model_id: 'tts-v3',
+        operation: 'voice_synthesis',
+        request_id: 'req_demo_0001',
+        tenant_id: 'org_demo',
+      },
+      quality: 'high',
+    }),
+  });
+
+  if (!generateResponse.ok) {
+    throw new Error(`Generation failed: ${generateResponse.statusText}`);
+  }
+
+  const generateResult = await generateResponse.json();
+
+  console.log('✓ Audio artifact generated');
+  console.log(`  Audio URL: ${generateResult.audio_url}`);
+  console.log(`  Duration: ${generateResult.audio_duration_seconds}s`);
+  console.log(`  Watermark SNR: ${generateResult.watermark.quality.snr_db}dB`);
+  console.log(`  Watermark confidence: ${(generateResult.watermark.quality.confidence * 100).toFixed(1)}%`);
+
+  console.log('\n[2/4] Downloading emitted audio artifact...');
+  const audioBuffer = await downloadAudio(generateResult.audio_url);
+  fs.writeFileSync('output_watermarked.wav', audioBuffer);
+  console.log('✓ Audio saved to output_watermarked.wav');
+
+  console.log('\n[3/4] Extracting proof package...');
+  const proofPackage = generateResult.proof_package;
+  console.log('✓ Proof package generated');
+  console.log(`  Public key: ${proofPackage.creator?.public_key || proofPackage.public_key}`);
+  console.log(`  Signature: ${(proofPackage.signature?.value || '').substring(0, 32)}...`);
+  console.log(`  Ledger anchor: ${proofPackage.ledger?.anchor || proofPackage.ledger_anchor}`);
+
+  console.log('\n[4/4] Saving proof package...');
+  fs.writeFileSync('proof_package.json', JSON.stringify(proofPackage, null, 2));
+  console.log('✓ Proof package saved to proof_package.json');
+
+  console.log('\nNext steps:\n');
+  console.log('1. Preserve the emitted audio artifact and its proof package.\n');
+  console.log('2. Use local verification or a protocol-aligned verifier to validate provenance.\n');
+  console.log('3. Treat the proof package as part of the emitted artifact boundary.\n');
+
+  return {
+    audioPath: 'output_watermarked.wav',
+    proofPath: 'proof_package.json',
+    metadata: {
+      creator: proofPackage.creator?.public_key || proofPackage.public_key,
+      createdAt: new Date().toISOString(),
+      requestId: 'req_demo_0001',
+      voiceId,
+    },
+  };
+}
+
+async function downloadAudio(audioUrl) {
+  const response = await fetch(audioUrl);
+
+  if (!response.ok) {
+    throw new Error(`Download failed: ${response.statusText}`);
+  }
+
+  return await response.buffer();
+}
+
+async function verifyLocalAudio() {
+  console.log('\nLocal Verification Example\n');
+
+  const proofPackage = JSON.parse(fs.readFileSync('proof_package.json', 'utf-8'));
+
+  console.log('[1] Proof Package Contents:');
+  console.log(`  Watermark payload: ${proofPackage.watermark?.payload_hex || proofPackage.watermark_hex}`);
+  console.log(`  Creator public key: ${proofPackage.creator?.public_key || proofPackage.public_key}`);
+  console.log(`  Signature: ${(proofPackage.signature?.value || '').substring(0, 64)}...`);
+  console.log(`  Algorithm: ${proofPackage.signature?.algorithm}`);
+  console.log(`  Timestamp: ${new Date((proofPackage.watermark?.timestamp || proofPackage.timestamp) * 1000).toISOString()}`);
+
+  console.log('\n[2] Proof Package Validation:');
+  console.log(`  ✓ Protocol version: ${proofPackage.protocol_version || proofPackage.version}`);
+  console.log(`  ✓ Signature algorithm: ${proofPackage.signature?.algorithm}`);
+  console.log(`  ✓ Ledger anchored: ${(proofPackage.ledger?.anchor || proofPackage.ledger_anchor) ? 'Yes' : 'No'}`);
+
+  console.log('\n[3] Full Verification Requires:');
+  console.log('  • Watermark extraction from the audio artifact');
+  console.log('  • Ed25519 signature verification');
+  console.log('  • Usage Event lookup when ledger validation is required\n');
+}
+
+if (require.main === module) {
+  (async () => {
+    try {
+      if (!VRI_API_KEY) {
+        console.error('Error: VRI_API_KEY environment variable not set');
+        console.error('Set it with: export VRI_API_KEY="your-api-key"');
+        process.exit(1);
+      }
+
+      await generateVoiceWithWatermark();
+      await verifyLocalAudio();
+    } catch (error) {
+      console.error('Error:', error.message);
+      process.exit(1);
+    }
+  })();
+}
+
+module.exports = { generateVoiceWithWatermark, verifyLocalAudio };

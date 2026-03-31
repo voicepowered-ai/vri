@@ -146,7 +146,7 @@ User Request
 [Notify User] via webhook/poll (eventually consistent)
 ```
 
-**Use Case**: Batch generation, podcast processing, platform integration
+**Use Case**: Batch generation, offline processing, deployment integration
 **Latency**: Unbounded (minutes acceptable)
 **Concurrency**: Unlimited via queue scaling
 
@@ -1110,10 +1110,10 @@ The proof package is the carrier of cryptographic evidence:
     "kyc_verified": true
   },
   "metadata": {
-    "platform": "internal",
-    "campaign": "my-podcast",
-    "license": "commercial",
-    "duration_seconds": 45.2
+    "model_id": "tts-v3",
+    "operation": "voice_synthesis",
+    "request_id": "req_123456",
+    "tenant_id": "org_789"
   },
   "ledger": {
     "anchor": null,  // Filled during ledger registration
@@ -1197,10 +1197,10 @@ interface UsageEvent {
   
   // Metadata
   metadata: {
-    platform?: string;           // "youtube", "tiktok", "podcast"
-    campaign?: string;           // custom identifier
-    license?: string;            // "personal", "commercial"
-    user_id?: string;            // optional user identifier
+    request_id?: string;         // request identifier
+    model_id?: string;           // generation model identifier
+    tenant_id?: string;          // tenant identifier
+    operation?: string;          // "voice_synthesis"
     tags?: string[];
   };
   
@@ -1583,7 +1583,7 @@ Option B: Graceful Degrade (return audio without proof)
 Option C: Queue for Later (async recovery)
   Pros: User gets token, audio preserved, retry automatic
   Cons: Asynchronous, delayed result
-  Use: Batch processing, podcasts
+  Use: Batch processing, asynchronous recovery
 ```
 
 ### 7.4 Fallback Behavior Configuration
@@ -2642,4 +2642,3 @@ This document defines a production-ready architecture for embedding VRI into AI 
 7. **Multi-Model Support**: Works with custom models, external APIs, and open-source frameworks
 
 The system is designed to be **the default layer inside any voice generation system**—not optional, not external, but embedded.
-

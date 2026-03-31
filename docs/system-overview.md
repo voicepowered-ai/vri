@@ -64,7 +64,7 @@ This document provides a high-level architectural view of VRI, including system 
    └────────────────┘        │                          │
                              │ • Append usage event     │
                              │ • Hash-anchor to tree    │
-                             │ • Track creator balance  │
+                             │ • Record verification    │
                              │ • Prevent tampering      │
                              └───────┬──────────────────┘
                                      │
@@ -75,14 +75,6 @@ This document provides a high-level architectural view of VRI, including system 
                              │ • Merkle tree    │
                              │ • Periodic anchor│
                              │ • Immutable proof│
-                             └──────────────────┘
-
-                             ┌──────────────────┐
-                             │ Wallet Service   │
-                             │                  │
-                             │ • Track earnings │
-                             │ • Settle payments│
-                             │ • Report to user │
                              └──────────────────┘
 
                              ┌──────────────────┐
@@ -107,8 +99,6 @@ This document provides a high-level architectural view of VRI, including system 
 POST   /v1/generate          Create audio with watermark
 POST   /v1/verify            Verify audio + check ledger
 GET    /v1/events/:id        Retrieve usage event
-GET    /v1/wallet            Creator's earnings
-POST   /v1/wallet/settle     Request payout
 GET    /v1/status            System health
 ```
 

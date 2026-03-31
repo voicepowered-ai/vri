@@ -1,6 +1,6 @@
 # VRI Documentation Index
 
-This index separates normative protocol material from non-normative reference documentation and release-integrity tooling.
+This index separates normative protocol material from non-normative reference documentation and release-integrity tooling for an inference-layer traceability protocol.
 
 ## Normative Protocol
 
@@ -33,7 +33,6 @@ These documents are explanatory. They do not override the protocol.
 - [docs/data-model.md](./docs/data-model.md)
 - [docs/watermark-spec.md](./docs/watermark-spec.md)
 - [docs/api.md](./docs/api.md)
-- [docs/wallet.md](./docs/wallet.md)
 
 These files describe reference designs, possible deployment patterns, and companion notes. They are not evidence of a deployed production system.
 

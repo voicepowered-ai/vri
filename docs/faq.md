@@ -6,14 +6,14 @@
 
 ### What is VRI?
 
-VRI (Voice Rights Infrastructure) is a cryptographic system that lets creators prove they own AI-generated voices and get paid every time someone uses them. Think of it as a "receipt system for audio" — every time your voice is used, the system records it and pays you.
+VRI (Voice Rights Infrastructure) is a cryptographic protocol for attaching verifiable provenance to AI-generated voice artifacts at the generation boundary. It combines watermarking, deterministic signatures, and optional ledger-backed event recording.
 
 ### How is VRI different from other watermarking systems?
 
 1. **Cryptographic proof**: VRI uses EdDSA signatures, not just markers. You can mathematically prove you created it.
-2. **Works everywhere**: Embed the proof once, use your voice on YouTube, Spotify, TikTok, anywhere.
-3. **Micropayments**: Every usage is tracked and monetized. Get paid for each use.
-4. **Ledger-based**: All payments recorded immutably on a blockchain-anchored ledger.
+2. **Inference-layer scope**: Proof is attached during generation rather than by a downstream processing system.
+3. **Deterministic verification**: Independent implementations can reproduce hashing and signature verification.
+4. **Ledger-based time integrity**: Verification events can be recorded in an append-only, externally anchored ledger.
 
 Traditional watermarking (DRM) is platform-specific and fragile. VRI is portable and cryptographically strong.
 
@@ -21,7 +21,7 @@ Traditional watermarking (DRM) is platform-specific and fragile. VRI is portable
 
 **New voices**: Yes, just generate them through VRI and they automatically get watermarked.
 
-**Existing voices**: You can submit them manually, but VRI will watermark them going forward. Past uses without watermarks can fall back to fingerprinting-based detection.
+**Existing voices**: They can be brought under VRI for future generations, but previously emitted artifacts without VRI provenance remain outside the protocol boundary and may rely only on probabilistic forensic detection.
 
 ### Is the watermark audible?
 
@@ -39,7 +39,7 @@ Technically yes, but with trade-offs:
 - **Source separation**: Isolates vocals but loses acoustic richness
 - **Re-synthesis**: Complete re-generation loses all proof but sounds unnatural (different voice)
 
-**Bottom line**: Removing watermarks without audible degradation is hard. Even if watermark evidence is lost, VRI's fingerprinting forensic layer can still flag the audio as similar to the original.
+**Bottom line**: Removing watermarks without audible degradation is difficult. Even if watermark evidence is lost, VRI's forensic layer can still provide probabilistic similarity signals, but those signals are not equivalent to cryptographic proof.
 
 ### What if someone steals my private key?
 
@@ -59,7 +59,7 @@ VRI has multiple security layers:
 1. **Watermarks**: Hard to remove without quality loss
 2. **EdDSA signatures**: Cryptographically unforgeable (no known attacks)
 3. **Ledger**: Write-once, anchored to blockchain (immutable)
-4. **Fingerprinting forensic layer**: Even watermark-less audio can still be investigated for similarity
+4. **Fingerprinting forensic layer**: Audio without recoverable watermark evidence can still be investigated for similarity
 
 Like any system, VRI can be attacked. But each layer has independent protections. An attacker would need to breach multiple layers simultaneously, which is infeasible.
 
@@ -69,7 +69,7 @@ Like any system, VRI can be attacked. But each layer has independent protections
 
 ### How long does watermarking take?
 
-Typical: 2–3 seconds for a 10-minute podcast episode.
+Typical latency depends on audio duration, model execution, and implementation details.
 
 - Extraction: ~200ms
 - Embedding: ~2s for ~500MB audio
@@ -111,12 +111,12 @@ Yes, but:
 
 ## Verification & Proof
 
-### How do I verify that audio uses my voice?
+### How do I verify that an audio artifact matches a VRI proof package?
 
 **If you have the proof package** (JSON):
 ```javascript
 const result = await vri.verify({
-  audioUrl: 'https://youtube.com/audio.wav',
+  audioUrl: 'https://example.com/audio.wav',
   proofPackage: {...}
 });
 ```
@@ -126,7 +126,7 @@ Result: `verified: true/false`
 **Without proof package**:
 ```javascript
 const result = await vri.verify({
-  audioUrl: 'https://youtube.com/audio.wav'
+  audioUrl: 'https://example.com/audio.wav'
 });
 ```
 
@@ -168,58 +168,15 @@ Typically completes in < 500ms.
 
 ---
 
-## Royalties & Payments
+## Usage Accounting
 
-### How much do I earn per use?
+### Does VRI define billing or settlement policy?
 
-Depends on platform and context:
+No. VRI permits usage accounting and settlement systems to be layered on top of verified events, but billing policy is external to the protocol.
 
-```
-YouTube:    $0.001 per view (×2 if commercial)
-Spotify:    $0.0003 per stream
-TikTok:     $0.0002 per video use
-Podcast:    $0.00005 per download
-```
+### What can be recorded in a verification or usage event?
 
-**Examples**:
-- YouTube video with 50k views: ~$100 (or $200 if commercial)
-- Spotify track with 100k streams: ~$30
-- TikTok video with 1k uses: ~$0.20
-
-### When do I get paid?
-
-Royalties accrue in real-time:
-1. Audio verified
-2. Usage event logged to ledger
-3. Wallet balance updated immediately
-
-**Settlement**: Request payout anytime. Min $10, typically processes within 1–2 days (Stripe/ACH) or 1 minute (crypto).
-
-### Can I see earnings per platform?
-
-Yes. Dashboard shows:
-- Total earnings (lifetime)
-- Earnings per platform (YouTube, Spotify, etc.)
-- Earnings by geography
-- Earnings trend over time
-
-### Do I have to pay taxes on my earnings?
-
-Yes. VRI operates like a contractor payment system.
-
-- **US creators**: Form 1099-NEC issued if earnings > $600/year
-- **Non-US creators**: Withholding per country agreements
-- **You're responsible for** reporting income in your country's tax system
-
-VRI provides tax documents, but consult a tax professional.
-
-### What are the payout fees?
-
-**Stripe/ACH**: 2% processing fee (VRI covers most of the cost; you pay the difference in lower rates)  
-**Crypto (Polygon/Solana)**: < 1% conversion spread  
-**Bank transfer**: Minimal
-
-**Bottom line**: You keep ~98% of your earnings. VRI takes small fee to cover payment processing.
+Implementations may record request-scoped, model-scoped, tenant-scoped, or deployment-scoped context, provided the meaning of those fields is defined by the implementing system.
 
 ---
 
@@ -250,7 +207,7 @@ VRI can detect it's similar (fingerprinting), but **cannot prove who created it*
 
 Legal remedies:
 1. You prove prior creation date via ledger timestamp
-2. Platform (YouTube, Spotify) uses Content ID to block clones
+2. External governance systems may use their own policy controls
 3. Legal action (copyright, personality rights)
 
 This is an asymmetric threat — easier to clone than to detect. VRI provides evidence, but human judgment (courts, platforms) is needed.
@@ -263,9 +220,9 @@ This is an asymmetric threat — easier to clone than to detect. VRI provides ev
 
 **Stored**:
 - Creator ID + public key
-- Payment address (wallet)
-- Usage events (platform, timestamp, views, etc.)
-- Wallet balance + transaction history
+- Optional settlement address
+- Usage events (request context, timestamp, verification status)
+- Accounting state and settlement history, if implemented
 - Audit logs
 
 **Not stored**:

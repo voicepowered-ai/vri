@@ -1,6 +1,6 @@
 # VRI: Voice Rights Infrastructure
 
-VRI is a documentation-first release of a voice provenance protocol. The normative source of truth is [`VRI-PROTOCOL-v1.0.md`](./VRI-PROTOCOL-v1.0.md). This repository also includes an explanatory whitepaper, companion technical notes, examples, and a reproducible documentation signing bundle.
+VRI is a documentation-first release of an inference-layer protocol for cryptographic traceability of AI-generated voice artifacts. The normative source of truth is [`VRI-PROTOCOL-v1.0.md`](./VRI-PROTOCOL-v1.0.md). This repository also includes an explanatory whitepaper, companion technical notes, examples, and a reproducible documentation signing bundle.
 
 ## Repository Scope
 
@@ -11,6 +11,8 @@ This repository contains three different kinds of material:
 3. **Release Integrity Material**: authorship metadata, manifest generation, and signature verification scripts for the documentation set itself.
 
 The protocol is real. The architecture material is explanatory. The examples are illustrative. This repository does not claim to provide a production deployment of watermarking, ledgering, usage accounting, or deployment integrations.
+
+VRI is centered on the generation boundary. Its purpose is to give cryptographic traceability to inference-time emitted voice artifacts, not to define downstream publishing or distribution systems.
 
 ## Normative Source
 
@@ -72,7 +74,7 @@ If any companion document differs from the protocol, the protocol controls.
 
 ## Security Model Summary
 
-VRI distributes verification across three layers:
+VRI provides cryptographic traceability at the inference boundary and distributes verification across three layers:
 
 - **Watermark**: probabilistic signal-bound provenance evidence.
 - **Signature**: deterministic Ed25519 validation over the protocol-defined message.

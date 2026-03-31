@@ -435,7 +435,7 @@ Score ∈ [0, 1]:
 ```
 Loudness = LUFS (Loudness Units relative to Full Scale)
 
-Before watermarking: L_before = -14 LUFS (typical podcast)
+Before watermarking: L_before = -14 LUFS (reference speech artifact)
 After watermarking:  L_after = -14.1 LUFS
 Difference:          0.1 LUFS (imperceptible)
 ```
@@ -478,17 +478,17 @@ For different quality targets:
 Low Robustness (high quality):
   - LDPC rate: 1/2 (2x redundancy instead of 4x)
   - Modulation depth: 1–2%
-  - Use case: Streaming (low error environment)
+  - Use case: low-error inference environment
 
 Medium Robustness:
   - LDPC rate: 1/4 (4x redundancy)
   - Modulation depth: 2–4%
-  - Use case: Standard (our default)
+  - Use case: standard deployment profile
 
 High Robustness:
   - LDPC rate: 1/8 (8x redundancy)
   - Modulation depth: 4–6%
-  - Use case: Lossy/noisy environments (visible degradation)
+  - Use case: lossy or noisy processing environments (visible degradation)
 ```
 
 ### Language Variants
@@ -497,8 +497,8 @@ Can encode different payload sizes:
 
 ```
 64-bit (current): Creator ID (32b) + Timestamp (24b) + Nonce (8b)
-128-bit (future): Creator ID + Timestamp + Context (platform, campaign)
-256-bit (future): Full metadata (creator, timestamp, context, contract)
+128-bit (future): Creator ID + Timestamp + Context (request, model)
+256-bit (future): Full metadata (creator, timestamp, request context, policy)
 ```
 
 ---
@@ -514,7 +514,7 @@ Can encode different payload sizes:
    Test: SNR = 50+ dB (imperceptible)
 
 2. Speech Audio
-   Input: Podcast episode (speech + background)
+   Input: Speech artifact (speech + background)
    Expected: Watermark embedded smoothly around speech energy
    Test: BER after MP3 @ 128kbps < 10%
 

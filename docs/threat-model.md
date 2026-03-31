@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document analyzes potential attacks against VRI and describes mitigations for each threat.
+This document analyzes potential attacks against VRI as an inference-layer traceability protocol and describes mitigations for each threat.
 
 ---
 
@@ -71,10 +71,10 @@ This document analyzes potential attacks against VRI and describes mitigations f
 - **Ledger timestamp**: Creator's first generation is permanently recorded with timestamp
 - **Fingerprint database**: New cloning attempt has slight acoustic differences
 - **Legal remedy**: Courts can subpoena ledger to prove prior creation
-- **Platform detection**: YouTube Content ID, Spotify Discover detect duplicate audio
-- **Economic barriers**: Legitimate creators earn faster than cloners can scale
+- **External enforcement systems**: downstream governance systems may provide additional controls
+- **Operational barriers**: legitimate operators retain earlier traceability evidence at the inference boundary
 
-**Residual Risk**: **Medium-High**. Requires legal/platform intervention, not purely technical.
+**Residual Risk**: **Medium-High**. Requires external governance intervention, not purely technical.
 
 ---
 
@@ -228,7 +228,7 @@ This document analyzes potential attacks against VRI and describes mitigations f
 - Distributed botnet
 
 **Likelihood**: Medium (easy to attempt)  
-**Impact**: Service unavailability, missed royalty payments
+**Impact**: Service unavailability and missed verification or accounting events
 
 **Mitigation**:
 - **Rate limiting**: Per-API-key limits (1K–10K req/min)
@@ -241,38 +241,38 @@ This document analyzes potential attacks against VRI and describes mitigations f
 
 ---
 
-### 5. Economic Attacks
+### 5. Usage Accounting Attacks
 
-#### 5.1 Royalty Inflation
+#### 5.1 Accounting Inflation
 
-**Threat**: Artificially inflate royalty payments by gaming usage metrics.
+**Threat**: Artificially inflate accounting outcomes by gaming usage metrics.
 
 **Attack Methods**:
 - Send same audio to verification multiple times
-- Coordinate fake platforms to report false usage numbers
-- Bot-generated views on legitimate platforms
+- Coordinate fake external systems to report false usage numbers
+- Generate synthetic usage signals against legitimate services
 
 **Likelihood**: Medium (economically incentivized)  
-**Impact**: Creator receives unearned payments
+**Impact**: Incorrect accounting outcomes
 
 **Mitigation**:
 - **Deduplication**: Same audio_hash examined within time window = 1 event, not N
-- **Platform verification**: Cross-check with authoritative platforms (YouTube, Spotify)
+- **External verification**: Cross-check with authoritative external systems where applicable
 - **Anomaly detection**: Sudden spikes in usage are flagged for investigation
 - **Proof-of-work**: Verification requires actual audio processing (computational cost)
 
-**Residual Risk**: **Medium**. Requires platform cooperation to detect sophisticated fraud.
+**Residual Risk**: **Medium**. Requires external cooperation to detect sophisticated fraud.
 
 ---
 
 #### 5.2 Creator Impersonation
 
-**Threat**: Attacker claims to be legitimate creator, steals royalties.
+**Threat**: Attacker claims to be legitimate creator and diverts accounting or settlement outcomes.
 
 **Attack Methods**:
 - Register new creator account with similar name
 - Claim watermarked audio as their own
-- Request payout to attacker's wallet
+- Request settlement to an attacker's destination
 
 **Likelihood**: Medium (if verification is lax)  
 **Impact**: Creator doesn't receive earnings, attacker profits
@@ -281,7 +281,7 @@ This document analyzes potential attacks against VRI and describes mitigations f
 - **Cryptographic proof**: Signature proves creator identity (can't be spoofed)
 - **KYC/Identity verification**: Creators submit government ID before payouts
 - **Manual review**: Suspicious creators flagged for verification
-- **Wallet address verification**: Payout address must match registered account
+- **Settlement destination verification**: Settlement destination must match registered account
 - **Email confirmation**: Settlement requests require email confirmation link
 
 **Residual Risk**: **Low**. Cryptographic proof prevents spoofing. KYC adds human verification layer.
@@ -290,25 +290,25 @@ This document analyzes potential attacks against VRI and describes mitigations f
 
 ### 6. Optional External Verifier Attacks
 
-#### 6.1 Fake Platform Reporting
+#### 6.1 Fake External Reporting
 
-**Threat**: Attacker claims audio was used on legitimate platform (YouTube, Spotify) to claim royalties.
+**Threat**: Attacker claims audio was processed by a legitimate external system in order to influence accounting outcomes.
 
 **Attack Methods**:
-- Forge usage context (platform, views, location)
+- Forge usage context (source, count, location)
 - Pass context to verification endpoint
-- Claim false royalty payments
+- Claim false accounting outcomes
 
 **Likelihood**: Medium (economically incentivized)  
-**Impact**: Unearned royalty payments
+**Impact**: Incorrect accounting outcomes
 
 **Mitigation**:
-- **Platform confirmation**: VRI can query YouTube/Spotify APIs to verify usage
-- **Cryptographic context**: Context is signed by platform or verified via API
-- **Ledger audit**: Royalty records are public (subject to privacy policy)
+- **External confirmation**: VRI can query external systems or verification endpoints where available
+- **Cryptographic context**: Context is signed by the external system or verified via API
+- **Ledger audit**: Verification and accounting records remain auditable
 - **Anomaly detection**: Unusual patterns flagged for investigation
 
-**Residual Risk**: **Medium**. Requires platform API integration for strong guarantees.
+**Residual Risk**: **Medium**. Requires external API integration for strong guarantees.
 
 ---
 
@@ -323,7 +323,7 @@ This document analyzes potential attacks against VRI and describes mitigations f
 | Selective Deletion | Low | High | Merkle anchor, snapshots | **Very Low** |
 | Man-in-the-Middle | Low | Medium | TLS, signing | **Low** |
 | Denial-of-Service | Medium | Medium | Rate limiting, scaling | **Medium** |
-| Royalty Inflation | Medium | High | Deduplication, anomaly | **Medium** |
+| Accounting Inflation | Medium | High | Deduplication, anomaly | **Medium** |
 | Creator Impersonation | Medium | High | Crypto proof, KYC | **Low** |
 | Fake Platform Report | Medium | Medium | Platform API, audit | **Medium** |
 
@@ -384,4 +384,4 @@ If you discover a vulnerability:
 
 ---
 
-**Next**: See [Wallet System](./wallet.md) for payment mechanics.
+**Next**: See companion reference documents for optional accounting and settlement design notes.

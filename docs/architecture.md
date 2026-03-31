@@ -36,15 +36,7 @@ POST /v1/verify
   Latency: <500ms (critical path)
 
 GET /v1/events/:event_id
-  Output: {audio_hash, creator_id, timestamp, platform, context}
-
-GET /v1/wallet
-  Input: Authorization header
-  Output: {balance, pending_settlement, transactions}
-
-POST /v1/wallet/settle
-  Input: {amount, payment_method}
-  Output: {transaction_id, status, expected_completion}
+  Output: {audio_hash, creator_id, timestamp, source_system, context}
 ```
 
 #### Rate Limiting
@@ -67,7 +59,7 @@ Burst: 50 req in 1-second window (token bucket algorithm)
 
 #### Signal Processing Pipeline
 
-Input: Raw WAV (44.1kHz, mono/stereo)
+Input: Raw WAV (reference implementation assumption)
 
 ```
 1. Decode Audio
@@ -653,8 +645,10 @@ async function settleWallet(creatorId, paymentMethod) {
   "creator_id": "0x...",
   "audio_s3_uri": "s3://bucket/key/audio.wav",
   "metadata": {
-    "platform": "youtube",
-    "campaign": "product-launch"
+    "request_id": "req_123456",
+    "model_id": "tts-v3",
+    "tenant_id": "org_789",
+    "operation": "voice_synthesis"
   },
   "timestamp": 1711892400,
   "retry_count": 0,

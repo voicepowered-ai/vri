@@ -10,12 +10,12 @@ VRI uses PostgreSQL for persistent storage with the following core tables:
 
 ### creators
 
-Registered voice creators.
+Registered signing identities.
 
 ```sql
 CREATE TABLE creators (
     creator_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    wallet_address VARCHAR(255),         -- Payment address
+    settlement_address VARCHAR(255),     -- Optional settlement address
     public_key BYTEA NOT NULL UNIQUE,    -- Ed25519, 32 bytes
     public_key_version INT DEFAULT 1,    -- For key rotation
     created_at BIGINT NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE creators (
 
 ### usage_events
 
-Usage records (immutable log).
+Verification and usage records (immutable log).
 
 ```sql
 CREATE TABLE usage_events (
@@ -40,16 +40,16 @@ CREATE TABLE usage_events (
     watermark_payload BYTEA,
     watermark_extracted BOOLEAN DEFAULT true,
     timestamp BIGINT NOT NULL,            -- Unix seconds (server time)
-    platform VARCHAR(50),                  -- youtube, spotify, etc.
-    context JSONB,                        -- {views: 1000, country: "US", ...}
+    source_system VARCHAR(50),            -- generation system or verification system
+    context JSONB,                        -- {request_id: "...", tenant_id: "...", ...}
     verified BOOLEAN DEFAULT true,
-    royalty_usdc BIGINT,                  -- In cents (microUSD)
+    accounting_units BIGINT,              -- Optional system-defined accounting quantity
     signature VARCHAR(128),               -- Signed by verification service
     batch_id VARCHAR(64) REFERENCES merkle_batches(batch_id),
     created_at BIGINT NOT NULL,
     
     INDEX (creator_id, timestamp DESC),
-    INDEX (platform, timestamp DESC),
+    INDEX (source_system, timestamp DESC),
     INDEX (verified),
     INDEX (batch_id)
 );
@@ -79,7 +79,7 @@ CREATE TABLE merkle_batches (
 
 ### wallets
 
-Creator earnings tracking.
+Optional accounting state.
 
 ```sql
 CREATE TABLE wallets (
@@ -88,7 +88,7 @@ CREATE TABLE wallets (
     lifetime_earnings_usdc BIGINT DEFAULT 0,
     last_settlement BIGINT,               -- Timestamp
     settlement_address VARCHAR(255),      -- External payment address
-    settlement_method VARCHAR(20),        -- stripe, ach, crypto
+    settlement_method VARCHAR(20),        -- implementation-defined settlement rail
     pending_settlement BIGINT DEFAULT 0,
     updated_at BIGINT NOT NULL,
     
@@ -98,7 +98,7 @@ CREATE TABLE wallets (
 
 ### transactions
 
-Payout records (settlement history).
+Settlement records (history).
 
 ```sql
 CREATE TABLE transactions (
@@ -108,7 +108,7 @@ CREATE TABLE transactions (
     status VARCHAR(20) NOT NULL,          -- pending, completed, failed
     payment_method VARCHAR(20) NOT NULL,
     error_message TEXT,
-    external_id VARCHAR(255),             -- Stripe tx, Ethereum hash, etc.
+    external_id VARCHAR(255),             -- External settlement reference
     created_at BIGINT NOT NULL,
     completed_at BIGINT,
     
