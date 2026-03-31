@@ -193,7 +193,7 @@ README.md
 - [x] Publish protocol and whitepaper foundation.
 - [x] Add branded repository assets and example tooling references.
 - [ ] Introduce remote registry integration.
-- [ ] Add signed proof-package generation and verification endpoints.
+- [ ] Add service endpoints for proof-package signing and verification.
 - [ ] Ship reference dashboards for licensing and monetization flows.
 - [ ] Expand to wallet-bound claims and programmable access control.
 
