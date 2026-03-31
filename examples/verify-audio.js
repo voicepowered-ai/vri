@@ -59,7 +59,7 @@ function decodeFlexibleBytes(value, label) {
 
 function expectExactLength(buffer, label, expectedLength) {
   if (buffer.length !== expectedLength) {
-    throw new Error(`${label} must be exactly ${expectedLength} bytes`);
+    throw new Error(`${label} must be exactly ${expectedLength} bytes (got ${buffer.length})`);
   }
   return buffer;
 }
@@ -206,6 +206,8 @@ function canonicalizeJsonValue(value) {
   }
 
   if (typeof value === 'number') {
+    // Metadata numbers MUST be integers to ensure deterministic
+    // serialization across implementations.
     if (!Number.isFinite(value) || !Number.isInteger(value)) {
       throw new Error('metadata numbers must be finite integers');
     }
@@ -230,6 +232,19 @@ function canonicalizeJsonValue(value) {
 }
 
 function getCanonicalMetadataString(proof) {
+  if (
+    typeof proof.canonical_metadata === 'string' &&
+    proof.metadata &&
+    typeof proof.metadata === 'object' &&
+    !Array.isArray(proof.metadata)
+  ) {
+    const computedCanonicalMetadata = canonicalizeJsonValue(proof.metadata);
+    if (computedCanonicalMetadata !== proof.canonical_metadata) {
+      throw new Error('canonical_metadata does not match metadata');
+    }
+    return proof.canonical_metadata;
+  }
+
   if (typeof proof.canonical_metadata === 'string') {
     return proof.canonical_metadata;
   }
@@ -305,6 +320,8 @@ function verifyAudioFile(audioPath, proofPath, options = {}) {
   // Reconstruct the protocol-defined metadata string deterministically.
   const canonicalMetadata = Buffer.from(getCanonicalMetadataString(proof), 'utf8');
 
+  // IMPORTANT: exact byte ordering and concatenation are protocol-critical.
+  // Any deviation will break signature verification.
   // Reconstruct the protocol-defined message input exactly:
   // watermark_payload || audio_hash || timestamp || canonical_metadata
   const messageInput = Buffer.concat([
