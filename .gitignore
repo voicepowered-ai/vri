@@ -1,0 +1,64 @@
+# Private keys and sensitive identity material
+private_key.pem
+**/private_key.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.pkcs8
+id_ed25519
+id_ed25519.pub
+
+# Local identity generation output
+vri_identity/
+*.bin
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.secret
+secrets/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build and temporary artifacts
+dist/
+build/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Coverage and test outputs
+coverage/
+.coverage
+htmlcov/
+
+# Draft work products not intended for publication by default
+notes/
+scratch/
+*.local.md
