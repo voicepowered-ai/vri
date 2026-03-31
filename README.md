@@ -49,12 +49,12 @@ Voice -> Fingerprint -> Hash -> Register -> Verify -> Monetize
 
 ```text
 ┌──────────────┐    ┌────────────────────┐    ┌──────────────┐    ┌───────────────┐    ┌──────────────┐
-│ Voice Input  │ -> │ Fingerprint Engine │ -> │  Hash Layer  │ -> │    Registry   │ -> │  API / SDK   │
+│ Voice Input  │ -> │ Fingerprint Engine │ -> │  Hash Layer  │ -> │    Registry   │ -> │ API / Tools  │
 └──────────────┘    └────────────────────┘    └──────────────┘    └───────────────┘    └──────────────┘
         |                      |                        |                     |                    |
         |                      |                        |                     |                    |
         v                      v                        v                     v                    v
-  WAV / MP3 / PCM       Signal features          SHA-256 digest      Ownership record      Verify / monetize
+  WAV / MP3 / PCM       Signal features          SHA-256 digest      Ownership record    Verify / monetize
 ```
 
 Core repository references:
@@ -72,73 +72,69 @@ Core repository references:
 
 `demo.gif` should show:
 
-1. A developer registering `voice.wav` from the CLI.
-2. The SDK returning a `voiceId`, fingerprint, and hash.
+1. A developer processing `voice.wav` from the command line.
+2. The example tooling returning a fingerprint, hash, and proof payload.
 3. A verification request confirming authenticity.
 4. A dashboard card indicating the asset is now ready for licensing or royalties.
 
 ## Getting Started
 
-```bash
-npm install
-```
-
-Register a voice from the CLI:
+Run the included local verification example:
 
 ```bash
-node ./src/index.js register ./examples/test/audio.wav
+node examples/verify-audio.js examples/test/audio.wav examples/test/proof.json
 ```
 
 Expected response:
 
-```json
-{
-  "voiceId": "vri_6d2f09e71c5e6c93",
-  "status": "registered"
-}
+```text
+VALID
 ```
 
-Verify a registered voice:
+Generate an example audio artifact:
 
 ```bash
-node ./src/index.js verify vri_6d2f09e71c5e6c93
+node examples/generate-audio.js
 ```
 
-Use the SDK directly:
+Reference CLI shape for a future VRI command:
 
-```js
-import { registerVoice, verifyVoice } from "./src/sdk.js";
+```bash
+vri register voice.wav
+```
 
-const registration = await registerVoice("./examples/test/audio.wav");
-const verification = await verifyVoice(registration.voiceId);
+Illustrative response:
 
-console.log(registration);
-console.log(verification);
+```json
+{
+  "voiceId": "vri_xxx",
+  "status": "registered"
+}
 ```
 
 ## API Overview
 
 ### `registerVoice(file)`
 
-Registers a voice asset from a local file path, `Buffer`, or `Uint8Array` and returns:
+Protocol-facing shape for registering a voice asset:
 
 ```json
 {
-  "voiceId": "vri_6d2f09e71c5e6c93",
+  "voiceId": "vri_xxx",
   "status": "registered",
-  "fingerprint": "fp_4f9f8cf4a8103d0a7f4d7ec5",
-  "audioHash": "6d2f09e71c5e6c93b7a62b7a8f2e9d5f...",
+  "fingerprint": "fp_xxx",
+  "audioHash": "sha256_xxx",
   "registry": "vri:testnet"
 }
 ```
 
 ### `verifyVoice(id)`
 
-Verifies the format and simulated registry status of a VRI voice identifier:
+Protocol-facing shape for verifying a registered voice:
 
 ```json
 {
-  "voiceId": "vri_6d2f09e71c5e6c93",
+  "voiceId": "vri_xxx",
   "status": "verified",
   "authenticity": "confirmed",
   "registry": "vri:testnet"
@@ -160,9 +156,9 @@ Returns:
 }
 ```
 
-## Example SDK
+## Example Tooling
 
-The repository includes a minimal ESM SDK in [src/sdk.js](./src/sdk.js) and a small CLI in [src/index.js](./src/index.js). The implementation is intentionally compact, readable, and ready to extend into a service-backed registry client.
+The executable code currently lives under [examples/generate-audio.js](./examples/generate-audio.js) and [examples/verify-audio.js](./examples/verify-audio.js). These examples demonstrate the local verification flow already present in the repository without introducing a separate SDK layer.
 
 ## Use Cases
 
@@ -181,21 +177,21 @@ assets/
   demo.gif
   logo.png
   logo-readme.png
-src/
-  index.js
-  sdk.js
+examples/
+  generate-audio.js
+  verify-audio.js
+  proof-package.json
 docs/
   architecture.md
   verification.md
   system-overview.md
 README.md
-package.json
 ```
 
 ## Roadmap
 
 - [x] Publish protocol and whitepaper foundation.
-- [x] Add branded repository assets and SDK examples.
+- [x] Add branded repository assets and example tooling references.
 - [ ] Introduce remote registry integration.
 - [ ] Add signed proof-package generation and verification endpoints.
 - [ ] Ship reference dashboards for licensing and monetization flows.
