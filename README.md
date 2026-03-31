@@ -106,6 +106,38 @@ Run the full verification flow:
 ./verify_docs.sh
 ```
 
+## Local Verification Example
+
+The repository includes a minimal local reference verifier for VRI Protocol v1.0.
+
+Run:
+
+```bash
+node examples/verify-audio.js examples/test/audio.wav examples/test/proof.json
+```
+
+Expected output:
+
+```text
+VALID
+```
+
+For debug output:
+
+```bash
+node examples/verify-audio.js examples/test/audio.wav examples/test/proof.json --verbose
+```
+
+This verifier demonstrates a minimal reproducible verification flow:
+
+- load a WAV audio artifact,
+- extract raw PCM bytes from the WAV `data` chunk,
+- compute `SHA-256` over the PCM payload,
+- reconstruct the protocol message digest,
+- verify the Ed25519 signature in the proof package.
+
+This example does not implement watermark extraction or ledger validation.
+
 ## Authorship & Integrity
 
 This documentation set is authored and cryptographically signed by:

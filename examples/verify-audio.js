@@ -1,1 +1,303 @@
-/**\n * VRI Example: Verify AI Voice Authenticity\n * \n * This example demonstrates how to verify that an audio file\n * contains a legitimate VRI watermark and signature.\n */\n\nconst fetch = require('node-fetch');\nconst fs = require('fs');\nconst path = require('path');\n\nconst VRI_API_KEY = process.env.VRI_API_KEY;\nconst VRI_API_URL = 'https://api.vri.app/v1';\n\nasync function verifyAudioFile(audioPath, proofPackagePath) {\n  /**\n   * Verify audio authenticity using VRI API\n   * \n   * @param {string} audioPath - Path to audio file (local or URL)\n   * @param {string} proofPackagePath - Path to proof_package.json (optional)\n   */\n  \n  console.log('╔═══════════════════════════════════════════════════╗');\n  console.log('║        VRI Audio Verification Example             ║');\n  console.log('╚═══════════════════════════════════════════════════╝\\n');\n  \n  // Load proof package if provided\n  let proofPackage = null;\n  if (proofPackagePath && fs.existsSync(proofPackagePath)) {\n    proofPackage = JSON.parse(\n      fs.readFileSync(proofPackagePath, 'utf-8')\n    );\n    console.log('[✓] Proof package loaded');\n  } else {\n    console.log('[→] No proof package provided (will use watermark extraction)');\n  }\n  \n  // Prepare audio\n  let audioInput;\n  \n  if (audioPath.startsWith('http://') || audioPath.startsWith('https://')) {\n    // Audio from URL\n    console.log(`[→] Verifying audio from URL...`);\n    audioInput = { audio_url: audioPath };\n    \n  } else if (fs.existsSync(audioPath)) {\n    // Local audio file\n    console.log(`[→] Verifying local audio file...`);\n    const audioBuffer = fs.readFileSync(audioPath);\n    const base64Audio = audioBuffer.toString('base64');\n    audioInput = { audio_buffer: base64Audio };\n    \n  } else {\n    throw new Error(`Audio file not found: ${audioPath}`);\n  }\n  \n  // Build request\n  const verifyRequest = {\n    ...audioInput,\n    proof_package: proofPackage,\n    context: {\n      platform: 'youtube',\n      views: 10000,\n      country: 'US'\n    }\n  };\n  \n  console.log('\\n[→] Calling VRI verification API...');\n  const startTime = Date.now();\n  \n  // Call VRI verification API\n  const verifyResponse = await fetch(`${VRI_API_URL}/verify`, {\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${VRI_API_KEY}`,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify(verifyRequest)\n  });\n  \n  const elapsedMs = Date.now() - startTime;\n  \n  if (!verifyResponse.ok) {\n    throw new Error(`Verification failed: ${verifyResponse.statusText}`);\n  }\n  \n  const result = await verifyResponse.json();\n  \n  // Display results\n  console.log(`[✓] Verification complete (${elapsedMs}ms)\\n`);\n  \n  console.log('═══════════════════════════════════════════════════');\n  console.log('VERIFICATION RESULT');\n  console.log('═══════════════════════════════════════════════════\\n');\n  \n  if (result.verified) {\n    // ✅ AUTHENTICATED\n    console.log('Status: ✅ AUTHENTICATED');\n    console.log(`Creator: ${result.creator_name}`);\n    console.log(`Creator ID: ${result.creator_id}`);\n    console.log(`Created: ${new Date(result.created_at * 1000).toISOString()}`);\n    console.log(`Confidence: ${(result.confidence * 100).toFixed(1)}%`);\n    \n    if (result.usage_recorded) {\n      console.log(`\\nUsage Event Recorded:`);\n      console.log(`  Event ID: ${result.usage_recorded.event_id}`);\n      console.log(`  Logged at: ${new Date(result.usage_recorded.timestamp * 1000).toISOString()}`);\n      console.log(`  Royalty: $${(result.royalty?.amount_usdc / 100).toFixed(2)} ${result.royalty?.platform}`);\n    }\n    \n  } else {\n    // ❌ NOT AUTHENTICATED (but may have fingerprint matches)\n    console.log('Status: ❌ NOT AUTHENTICATED');\n    console.log(`Reason: ${result.status}`);\n    console.log(`Verified: false`);\n    \n    if (result.fingerprint_matches && result.fingerprint_matches.length > 0) {\n      console.log(`\\nFingerprint Matches (probabilistic):`);\n      result.fingerprint_matches.forEach((match, i) => {\n        console.log(`  ${i + 1}. ${match.creator_name}`);\n        console.log(`     ID: ${match.creator_id}`);\n        console.log(`     Confidence: ${(match.confidence * 100).toFixed(1)}%`);\n        console.log('');\n      });\n    } else {\n      console.log(`\\nNo fingerprint matches found.`);\n    }\n  }\n  \n  // Show metadata\n  console.log('\\nMetadata:');\n  console.log(`  Watermark extracted: ${result.metadata.watermark_extracted}`);\n  if (result.metadata.watermark_ber !== undefined) {\n    console.log(`  Watermark BER: ${(result.metadata.watermark_ber * 100).toFixed(2)}%`);\n  }\n  console.log(`  Fingerprint extracted: ${result.metadata.fingerprint_extracted}`);\n  console.log(`  Processing time: ${result.metadata.processing_time_ms}ms`);\n  \n  console.log('\\n═══════════════════════════════════════════════════\\n');\n  \n  return result;\n}\n\nasync function queryWalletBalance(creatorId) {\n  /**\n   * Query creator's current wallet balance and earnings\n   */\n  \n  console.log('\\n═══════════════════════════════════════════════════');\n  console.log('Creator Wallet Balance');\n  console.log('═══════════════════════════════════════════════════\\n');\n  \n  const walletResponse = await fetch(`${VRI_API_URL}/wallet`, {\n    method: 'GET',\n    headers: {\n      'Authorization': `Bearer ${VRI_API_KEY}`\n    }\n  });\n  \n  if (!walletResponse.ok) {\n    throw new Error(`Wallet query failed: ${walletResponse.statusText}`);\n  }\n  \n  const wallet = await walletResponse.json();\n  \n  console.log(`Creator: ${wallet.creator_name}`);\n  console.log(`ID: ${wallet.creator_id}\\n`);\n  \n  console.log(`Current Balance: ${wallet.balance_formatted}`);\n  console.log(`Lifetime Earnings: $${(wallet.lifetime_earnings_usdc / 100).toFixed(2)}\\n`);\n  \n  if (wallet.pending_settlement) {\n    console.log(`Pending Settlement: ${wallet.pending_settlement.amount_formatted}`);\n    console.log(`Can Settle: ${wallet.pending_settlement.amount_usdc >= wallet.pending_settlement.min_threshold_usdc ? 'Yes ✓' : 'No (min $10)'}`);\n  }\n  \n  if (wallet.recent_events && wallet.recent_events.length > 0) {\n    console.log(`\\nRecent Events (last 30 days):\\n`);\n    wallet.recent_events.forEach((event, i) => {\n      console.log(`  ${i + 1}. ${event.platform}`);\n      console.log(`     Time: ${new Date(event.timestamp * 1000).toISOString()}`);\n      console.log(`     Earned: $${(event.royalty_usdc / 100).toFixed(2)}\\n`);\n    });\n  }\n  \n  console.log('═══════════════════════════════════════════════════\\n');\n  \n  return wallet;\n}\n\nasync function queryUsageEvent(eventId) {\n  /**\n   * Query details of a specific usage event\n   */\n  \n  console.log(`\\nQuerying usage event: ${eventId}...\\n`);\n  \n  const eventResponse = await fetch(\n    `${VRI_API_URL}/events/${eventId}`,\n    {\n      headers: {\n        'Authorization': `Bearer ${VRI_API_KEY}`\n      }\n    }\n  );\n  \n  if (!eventResponse.ok) {\n    throw new Error(`Event query failed: ${eventResponse.statusText}`);\n  }\n  \n  const event = await eventResponse.json();\n  \n  console.log('Usage Event Details:');\n  console.log('═══════════════════════════════════════════════════');\n  console.log(`Event ID: ${event.event_id}`);\n  console.log(`Creator: ${event.creator_name}`);\n  console.log(`Platform: ${event.platform}`);\n  console.log(`Time: ${new Date(event.timestamp * 1000).toISOString()}`);\n  console.log(`Views/Uses: ${event.context.views || 'N/A'}`);\n  console.log(`Country: ${event.context.country || 'N/A'}`);\n  console.log(`Royalty: $${(event.royalty_usdc / 100).toFixed(2)}`);\n  console.log(`Ledger Confirmed: ${event.ledger_confirmed ? 'Yes ✓' : 'No (pending)'}`);\n  console.log(`Merkle Batch: ${event.batch_id || 'Not yet batched'}`);\n  console.log('═══════════════════════════════════════════════════\\n');\n  \n  return event;\n}\n\n// Example usage\nif (require.main === module) {\n  (async () => {\n    try {\n      if (!VRI_API_KEY) {\n        console.error('Error: VRI_API_KEY environment variable not set');\n        console.error('Set it with: export VRI_API_KEY=\"your-api-key\"');\n        process.exit(1);\n      }\n      \n      // Example 1: Verify audio file\n      const audioFile = process.argv[2] || 'output_watermarked.wav';\n      const proofFile = process.argv[3] || 'proof_package.json';\n      \n      if (fs.existsSync(audioFile)) {\n        const verifyResult = await verifyAudioFile(audioFile, proofFile);\n        \n        // Example 2: Query wallet (uses current authenticated creator)\n        if (verifyResult.verified) {\n          // await queryWalletBalance(verifyResult.creator_id);\n          \n          // Example 3: Query specific usage event\n          // if (verifyResult.usage_recorded) {\n          //   await queryUsageEvent(verifyResult.usage_recorded.event_id);\n          // }\n        }\n      } else {\n        // If no local file, verify from URL\n        const testUrl = 'https://example.com/audio.wav';\n        console.log(`Local file \"${audioFile}\" not found.`);\n        console.log(`To verify a URL, call:`);\n        console.log(`  verifyAudioFile(\"${testUrl}\", null)\\n`);\n      }\n      \n    } catch (error) {\n      console.error('Error:', error.message);\n      process.exit(1);\n    }\n  })();\n}\n\nmodule.exports = { verifyAudioFile, queryWalletBalance, queryUsageEvent };\n
+#!/usr/bin/env node
+
+/**
+ * Minimal VRI Protocol v1.0 reference verifier.
+ *
+ * Usage:
+ *   node examples/verify-audio.js <audio.wav> <proof.json> [--verbose]
+ *
+ * This verifier intentionally implements a narrow, reproducible path:
+ * - load a WAV file from disk,
+ * - extract the raw PCM payload from the WAV container,
+ * - compute SHA-256 over the PCM bytes,
+ * - reconstruct the signed message digest,
+ * - verify the Ed25519 signature.
+ *
+ * It does not implement watermark extraction or ledger validation.
+ */
+
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const VALID = 'VALID';
+const INVALID_SIGNATURE = 'INVALID_SIGNATURE';
+const HASH_MISMATCH = 'HASH_MISMATCH';
+const INVALID_FORMAT = 'INVALID_FORMAT';
+
+function fail(reason, message) {
+  if (message) {
+    console.error(message);
+  }
+  console.log(reason);
+  process.exit(1);
+}
+
+function isHexString(value) {
+  return typeof value === 'string' && /^(?:0x)?[0-9a-fA-F]+$/.test(value);
+}
+
+function decodeFlexibleBytes(value, label) {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`);
+  }
+
+  if (value.startsWith('0x') || isHexString(value)) {
+    const normalized = value.startsWith('0x') ? value.slice(2) : value;
+    if (normalized.length % 2 !== 0) {
+      throw new Error(`${label} hex length must be even`);
+    }
+    return Buffer.from(normalized, 'hex');
+  }
+
+  return Buffer.from(value, 'base64');
+}
+
+function decodePublicKey(value) {
+  if (typeof value !== 'string') {
+    throw new Error('public_key must be a string');
+  }
+
+  if (value.includes('BEGIN PUBLIC KEY')) {
+    return crypto.createPublicKey(value);
+  }
+
+  const keyBytes = decodeFlexibleBytes(value, 'public_key');
+
+  if (keyBytes.length !== 32) {
+    throw new Error('public_key must be a PEM key or 32 raw Ed25519 bytes');
+  }
+
+  // SPKI prefix for a raw Ed25519 public key.
+  const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
+  return crypto.createPublicKey({
+    key: Buffer.concat([spkiPrefix, keyBytes]),
+    format: 'der',
+    type: 'spki',
+  });
+}
+
+function normalizeSignature(proof) {
+  if (proof.signature && typeof proof.signature === 'object') {
+    return decodeFlexibleBytes(proof.signature.value, 'signature.value');
+  }
+
+  return decodeFlexibleBytes(proof.signature, 'signature');
+}
+
+function normalizeAudioHash(proof) {
+  return decodeFlexibleBytes(proof.audio_hash, 'audio_hash');
+}
+
+function normalizeWatermarkPayload(proof) {
+  return decodeFlexibleBytes(proof.watermark_payload, 'watermark_payload');
+}
+
+function readJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    throw new Error(`failed to parse JSON: ${error.message}`);
+  }
+}
+
+function readWavPcmData(filePath) {
+  const wav = fs.readFileSync(filePath);
+
+  if (wav.length < 12) {
+    throw new Error('WAV file is too small');
+  }
+
+  if (wav.toString('ascii', 0, 4) !== 'RIFF') {
+    throw new Error('WAV file missing RIFF header');
+  }
+
+  if (wav.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('WAV file missing WAVE header');
+  }
+
+  let offset = 12;
+
+  while (offset + 8 <= wav.length) {
+    const chunkId = wav.toString('ascii', offset, offset + 4);
+    const chunkSize = wav.readUInt32LE(offset + 4);
+    const chunkStart = offset + 8;
+    const chunkEnd = chunkStart + chunkSize;
+
+    if (chunkEnd > wav.length) {
+      throw new Error(`WAV chunk ${chunkId} extends beyond file length`);
+    }
+
+    if (chunkId === 'data') {
+      return wav.subarray(chunkStart, chunkEnd);
+    }
+
+    offset = chunkEnd + (chunkSize % 2);
+  }
+
+  throw new Error('WAV file missing data chunk');
+}
+
+function encodeUint64BigEndian(value) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error('timestamp must be a non-negative integer');
+  }
+
+  const buffer = Buffer.alloc(8);
+  buffer.writeBigUInt64BE(BigInt(value));
+  return buffer;
+}
+
+function getCanonicalMetadataString(proof) {
+  if (typeof proof.canonical_metadata === 'string') {
+    return proof.canonical_metadata;
+  }
+
+  if (proof.metadata && typeof proof.metadata === 'object' && !Array.isArray(proof.metadata)) {
+    return JSON.stringify(proof.metadata);
+  }
+
+  throw new Error('proof must include canonical_metadata as a string or metadata as an object');
+}
+
+function validateProofShape(proof) {
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) {
+    throw new Error('proof must be a JSON object');
+  }
+
+  if (!('watermark_payload' in proof)) {
+    throw new Error('proof.watermark_payload is required');
+  }
+
+  if (!('audio_hash' in proof)) {
+    throw new Error('proof.audio_hash is required');
+  }
+
+  if (!('timestamp' in proof)) {
+    throw new Error('proof.timestamp is required');
+  }
+
+  if (!('public_key' in proof)) {
+    throw new Error('proof.public_key is required');
+  }
+
+  if (!('signature' in proof)) {
+    throw new Error('proof.signature is required');
+  }
+}
+
+function verifyAudioFile(audioPath, proofPath, options = {}) {
+  const verbose = Boolean(options.verbose);
+  const absoluteAudioPath = path.resolve(audioPath);
+  const absoluteProofPath = path.resolve(proofPath);
+
+  if (!fs.existsSync(absoluteAudioPath)) {
+    throw new Error(`audio file not found: ${absoluteAudioPath}`);
+  }
+
+  if (!fs.existsSync(absoluteProofPath)) {
+    throw new Error(`proof file not found: ${absoluteProofPath}`);
+  }
+
+  const proof = readJson(absoluteProofPath);
+  validateProofShape(proof);
+
+  const pcmBuffer = readWavPcmData(absoluteAudioPath);
+  const computedAudioHash = crypto.createHash('sha256').update(pcmBuffer).digest();
+  const expectedAudioHash = normalizeAudioHash(proof);
+
+  if (!computedAudioHash.equals(expectedAudioHash)) {
+    return {
+      ok: false,
+      reason: HASH_MISMATCH,
+      debug: {
+        computed_audio_hash: computedAudioHash.toString('hex'),
+        proof_audio_hash: expectedAudioHash.toString('hex'),
+      },
+    };
+  }
+
+  const watermarkPayload = normalizeWatermarkPayload(proof);
+  const timestamp = encodeUint64BigEndian(proof.timestamp);
+  const canonicalMetadata = Buffer.from(getCanonicalMetadataString(proof), 'utf8');
+
+  const messageInput = Buffer.concat([
+    watermarkPayload,
+    computedAudioHash,
+    timestamp,
+    canonicalMetadata,
+  ]);
+
+  const messageDigest = crypto.createHash('sha256').update(messageInput).digest();
+  const signature = normalizeSignature(proof);
+  const publicKey = decodePublicKey(proof.public_key);
+
+  const isValid = crypto.verify(null, messageDigest, publicKey, signature);
+
+  if (!isValid) {
+    return {
+      ok: false,
+      reason: INVALID_SIGNATURE,
+      debug: {
+        message_digest: messageDigest.toString('hex'),
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    reason: VALID,
+    debug: verbose
+      ? {
+          pcm_bytes: pcmBuffer.length,
+          audio_hash: computedAudioHash.toString('hex'),
+          message_digest: messageDigest.toString('hex'),
+        }
+      : undefined,
+  };
+}
+
+function parseArgs(argv) {
+  const verbose = argv.includes('--verbose');
+  const positional = argv.filter((arg) => arg !== '--verbose');
+
+  if (positional.length !== 2) {
+    throw new Error('usage: node examples/verify-audio.js <audio.wav> <proof.json> [--verbose]');
+  }
+
+  return {
+    audioPath: positional[0],
+    proofPath: positional[1],
+    verbose,
+  };
+}
+
+if (require.main === module) {
+  try {
+    const { audioPath, proofPath, verbose } = parseArgs(process.argv.slice(2));
+    const result = verifyAudioFile(audioPath, proofPath, { verbose });
+
+    if (verbose && result.debug) {
+      console.error(JSON.stringify(result.debug, null, 2));
+    }
+
+    if (result.ok) {
+      console.log(VALID);
+      process.exit(0);
+    }
+
+    console.log(result.reason);
+    process.exit(1);
+  } catch (error) {
+    fail(INVALID_FORMAT, error.message);
+  }
+}
+
+module.exports = {
+  verifyAudioFile,
+  readWavPcmData,
+};

@@ -1,0 +1,8 @@
+{
+  "audio_hash": "0xf3b549a16edb521ea3eb27389b0b146b753d76b1b3c37a2ea7d779e1ca0a1e01",
+  "canonical_metadata": "{\"model_id\":\"tts-v3\",\"operation\":\"voice_synthesis\",\"request_id\":\"req_test_0001\",\"tenant_id\":\"org_test\"}",
+  "public_key": "0x07cf83b9e0c76c886ed2033d045f032004b3d788eec8ab3df32066baba9b212f",
+  "signature": "0xd957192c776ce6aaaf5df5f1de2744825d1c17dd5fc0f43221a279bb7aae12bc4d80c1d4c729bb8de3399bd9faf5f757a750a33d0d3f7d429c796374e8c1b00d",
+  "timestamp": 1774957200,
+  "watermark_payload": "0xa1b2c3d400000001"
+}
