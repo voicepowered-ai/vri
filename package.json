@@ -1,0 +1,28 @@
+{
+  "name": "@vri/protocol-sdk",
+  "version": "0.1.0",
+  "description": "Minimal VRI SDK and CLI examples for voice registration and verification.",
+  "type": "module",
+  "bin": {
+    "vri": "./src/index.js"
+  },
+  "exports": {
+    ".": "./src/sdk.js"
+  },
+  "scripts": {
+    "register:demo": "node ./src/index.js register ./examples/test/audio.wav",
+    "verify:demo": "node ./src/index.js verify vri_demo1234567890"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "voice",
+    "provenance",
+    "verification",
+    "web3",
+    "crypto",
+    "ai"
+  ],
+  "license": "Apache-2.0"
+}
