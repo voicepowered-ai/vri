@@ -57,6 +57,13 @@ function decodeFlexibleBytes(value, label) {
   return Buffer.from(value, 'base64');
 }
 
+function expectExactLength(buffer, label, expectedLength) {
+  if (buffer.length !== expectedLength) {
+    throw new Error(`${label} must be exactly ${expectedLength} bytes`);
+  }
+  return buffer;
+}
+
 function decodePublicKey(value) {
   if (typeof value !== 'string') {
     throw new Error('public_key must be a string');
@@ -83,18 +90,34 @@ function decodePublicKey(value) {
 
 function normalizeSignature(proof) {
   if (proof.signature && typeof proof.signature === 'object') {
-    return decodeFlexibleBytes(proof.signature.value, 'signature.value');
+    return expectExactLength(
+      decodeFlexibleBytes(proof.signature.value, 'signature.value'),
+      'signature',
+      64
+    );
   }
 
-  return decodeFlexibleBytes(proof.signature, 'signature');
+  return expectExactLength(
+    decodeFlexibleBytes(proof.signature, 'signature'),
+    'signature',
+    64
+  );
 }
 
 function normalizeAudioHash(proof) {
-  return decodeFlexibleBytes(proof.audio_hash, 'audio_hash');
+  return expectExactLength(
+    decodeFlexibleBytes(proof.audio_hash, 'audio_hash'),
+    'audio_hash',
+    32
+  );
 }
 
 function normalizeWatermarkPayload(proof) {
-  return decodeFlexibleBytes(proof.watermark_payload, 'watermark_payload');
+  return expectExactLength(
+    decodeFlexibleBytes(proof.watermark_payload, 'watermark_payload'),
+    'watermark_payload',
+    8
+  );
 }
 
 function readJson(filePath) {
@@ -106,6 +129,9 @@ function readJson(filePath) {
 }
 
 function readWavPcmData(filePath) {
+  // This implementation assumes the WAV file already matches
+  // VRI Canonical Audio (v1.0). It does not perform resampling
+  // or normalization.
   const wav = fs.readFileSync(filePath);
 
   if (wav.length < 12) {
@@ -143,13 +169,64 @@ function readWavPcmData(filePath) {
 }
 
 function encodeUint64BigEndian(value) {
-  if (!Number.isInteger(value) || value < 0) {
+  let normalizedValue;
+
+  if (typeof value === 'bigint') {
+    normalizedValue = value;
+  } else if (typeof value === 'number') {
+    if (!Number.isInteger(value)) {
+      throw new Error('timestamp must be an integer');
+    }
+    normalizedValue = BigInt(value);
+  } else if (typeof value === 'string') {
+    if (!/^[0-9]+$/.test(value)) {
+      throw new Error('timestamp string must contain only decimal digits');
+    }
+    normalizedValue = BigInt(value);
+  } else {
+    throw new Error('timestamp must be a number, string, or bigint');
+  }
+
+  if (normalizedValue < 0n) {
     throw new Error('timestamp must be a non-negative integer');
   }
 
   const buffer = Buffer.alloc(8);
-  buffer.writeBigUInt64BE(BigInt(value));
+  buffer.writeBigUInt64BE(normalizedValue);
   return buffer;
+}
+
+function canonicalizeJsonValue(value) {
+  if (value === null) {
+    return 'null';
+  }
+
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new Error('metadata numbers must be finite integers');
+    }
+    return String(value);
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalizeJsonValue(item)).join(',')}]`;
+  }
+
+  if (typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    const members = keys.map((key) => `${JSON.stringify(key)}:${canonicalizeJsonValue(value[key])}`);
+    return `{${members.join(',')}}`;
+  }
+
+  throw new Error('metadata contains unsupported value type');
 }
 
 function getCanonicalMetadataString(proof) {
@@ -158,7 +235,7 @@ function getCanonicalMetadataString(proof) {
   }
 
   if (proof.metadata && typeof proof.metadata === 'object' && !Array.isArray(proof.metadata)) {
-    return JSON.stringify(proof.metadata);
+    return canonicalizeJsonValue(proof.metadata);
   }
 
   throw new Error('proof must include canonical_metadata as a string or metadata as an object');
@@ -214,17 +291,22 @@ function verifyAudioFile(audioPath, proofPath, options = {}) {
     return {
       ok: false,
       reason: HASH_MISMATCH,
-      debug: {
-        computed_audio_hash: computedAudioHash.toString('hex'),
-        proof_audio_hash: expectedAudioHash.toString('hex'),
-      },
+      debug: verbose
+        ? {
+            computed_audio_hash: computedAudioHash.toString('hex'),
+            expected_audio_hash: expectedAudioHash.toString('hex'),
+          }
+        : undefined,
     };
   }
 
   const watermarkPayload = normalizeWatermarkPayload(proof);
   const timestamp = encodeUint64BigEndian(proof.timestamp);
+  // Reconstruct the protocol-defined metadata string deterministically.
   const canonicalMetadata = Buffer.from(getCanonicalMetadataString(proof), 'utf8');
 
+  // Reconstruct the protocol-defined message input exactly:
+  // watermark_payload || audio_hash || timestamp || canonical_metadata
   const messageInput = Buffer.concat([
     watermarkPayload,
     computedAudioHash,
@@ -242,9 +324,11 @@ function verifyAudioFile(audioPath, proofPath, options = {}) {
     return {
       ok: false,
       reason: INVALID_SIGNATURE,
-      debug: {
-        message_digest: messageDigest.toString('hex'),
-      },
+      debug: verbose
+        ? {
+            message_digest: messageDigest.toString('hex'),
+          }
+        : undefined,
     };
   }
 
