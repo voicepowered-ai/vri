@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/logo-readme.png" alt="VRI - Voice Rights Infrastructure" width="820">
+</p>
+
 # VRI: Voice Rights Infrastructure
 
 VRI is a documentation-first release of an inference-layer protocol for cryptographic traceability of AI-generated voice artifacts. The normative source of truth is [`VRI-PROTOCOL-v1.0.md`](./VRI-PROTOCOL-v1.0.md). This repository also includes an explanatory whitepaper, companion technical notes, examples, and a reproducible documentation signing bundle.
