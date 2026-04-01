@@ -18,6 +18,179 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload, null, 2));
 }
 
+function assertNoDuplicateJsonObjectKeys(source) {
+  let index = 0;
+
+  function skipWhitespace() {
+    while (index < source.length && /\s/.test(source[index])) {
+      index += 1;
+    }
+  }
+
+  function parseString() {
+    if (source[index] !== '"') {
+      throw new Error("Invalid JSON string.");
+    }
+
+    index += 1;
+    let result = "";
+
+    while (index < source.length) {
+      const ch = source[index];
+      index += 1;
+
+      if (ch === '"') {
+        return result;
+      }
+
+      if (ch === "\\") {
+        if (index >= source.length) {
+          throw new Error("Invalid JSON escape sequence.");
+        }
+
+        const esc = source[index];
+        index += 1;
+
+        if (esc === "u") {
+          const hex = source.slice(index, index + 4);
+          if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
+            throw new Error("Invalid Unicode escape sequence.");
+          }
+          result += String.fromCharCode(Number.parseInt(hex, 16));
+          index += 4;
+        } else {
+          const map = {
+            '"': '"',
+            "\\": "\\",
+            "/": "/",
+            b: "\b",
+            f: "\f",
+            n: "\n",
+            r: "\r",
+            t: "\t"
+          };
+          if (!(esc in map)) {
+            throw new Error("Invalid JSON escape sequence.");
+          }
+          result += map[esc];
+        }
+      } else {
+        result += ch;
+      }
+    }
+
+    throw new Error("Unterminated JSON string.");
+  }
+
+  function parseLiteral(literal) {
+    if (source.slice(index, index + literal.length) !== literal) {
+      throw new Error("Invalid JSON literal.");
+    }
+    index += literal.length;
+  }
+
+  function parseNumber() {
+    const numberPattern = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+    numberPattern.lastIndex = index;
+    const match = numberPattern.exec(source);
+    if (!match) {
+      throw new Error("Invalid JSON number.");
+    }
+    index = numberPattern.lastIndex;
+  }
+
+  function parseArray() {
+    index += 1; // [
+    skipWhitespace();
+    if (source[index] === "]") {
+      index += 1;
+      return;
+    }
+
+    while (index < source.length) {
+      parseValue();
+      skipWhitespace();
+      if (source[index] === ",") {
+        index += 1;
+        skipWhitespace();
+        continue;
+      }
+      if (source[index] === "]") {
+        index += 1;
+        return;
+      }
+      throw new Error("Invalid JSON array.");
+    }
+
+    throw new Error("Unterminated JSON array.");
+  }
+
+  function parseObject() {
+    index += 1; // {
+    skipWhitespace();
+    const keys = new Set();
+
+    if (source[index] === "}") {
+      index += 1;
+      return;
+    }
+
+    while (index < source.length) {
+      const key = parseString();
+      if (keys.has(key)) {
+        const error = new Error(`Duplicate JSON key: ${key}`);
+        error.code = "DUPLICATE_JSON_KEY";
+        throw error;
+      }
+      keys.add(key);
+
+      skipWhitespace();
+      if (source[index] !== ":") {
+        throw new Error("Invalid JSON object.");
+      }
+      index += 1;
+      skipWhitespace();
+      parseValue();
+      skipWhitespace();
+
+      if (source[index] === ",") {
+        index += 1;
+        skipWhitespace();
+        continue;
+      }
+
+      if (source[index] === "}") {
+        index += 1;
+        return;
+      }
+
+      throw new Error("Invalid JSON object.");
+    }
+
+    throw new Error("Unterminated JSON object.");
+  }
+
+  function parseValue() {
+    skipWhitespace();
+    const ch = source[index];
+    if (ch === "{") return parseObject();
+    if (ch === "[") return parseArray();
+    if (ch === '"') return parseString();
+    if (ch === "t") return parseLiteral("true");
+    if (ch === "f") return parseLiteral("false");
+    if (ch === "n") return parseLiteral("null");
+    return parseNumber();
+  }
+
+  skipWhitespace();
+  parseValue();
+  skipWhitespace();
+
+  if (index !== source.length) {
+    throw new Error("Unexpected trailing JSON content.");
+  }
+}
+
 async function readJson(request, maxBytes = 8 * 1024 * 1024) {
   const chunks = [];
   let total = 0;
@@ -37,7 +210,9 @@ async function readJson(request, maxBytes = 8 * 1024 * 1024) {
   }
 
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const jsonText = Buffer.concat(chunks).toString("utf8");
+    assertNoDuplicateJsonObjectKeys(jsonText);
+    return JSON.parse(jsonText);
   } catch {
     const error = new Error("Invalid JSON payload");
     error.code = "INVALID_JSON";

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 
 export const DEFAULT_REGISTRY = "vri:testnet";
 const SPKI_PREFIX_ED25519 = Buffer.from("302a300506032b6570032100", "hex");
+const SIGNATURE_CONTEXT_PREFIX = Buffer.from("VRI-SIG-V1\0", "utf8");
 
 export async function readAudioInput(input) {
   if (typeof input === "string") {
@@ -263,6 +264,9 @@ function decodePcmSamplesToInt32(buffer, dataOffset, frameCount, channels, bitsP
     const MAX_INT32 = 2147483647;
     for (let index = 0; index < decoded.length; index += 1) {
       const float32 = buffer.readFloatLE(inputOffset);
+      if (!Number.isFinite(float32)) {
+        throw new Error("Non-finite float sample detected in WAV input.");
+      }
       decoded[index] = Math.max(-MAX_INT32 - 1, Math.min(MAX_INT32, Math.trunc(float32 * MAX_INT32)));
       inputOffset += 4;
     }
@@ -408,6 +412,7 @@ export function createWatermarkPayload(publicKeyBytes, timestamp, nonce = crypto
 export function buildSignatureMessageDigest({ watermarkPayload, audioHash, timestamp, canonicalMetadata }) {
   const canonicalMetadataBytes = Buffer.from(canonicalMetadata, "utf8");
   const messageInput = Buffer.concat([
+    SIGNATURE_CONTEXT_PREFIX,
     watermarkPayload,
     audioHash,
     encodeUint64BigEndian(timestamp),
@@ -541,6 +546,10 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
   const nowTimestamp = Number(options.nowTimestamp ?? Math.floor(Date.now() / 1000));
   const nonceTracker = options.nonceTracker ?? null;
   const watermarkStatus = options.watermarkStatus ?? "not_applicable";
+  const requireWatermarkCheck = options.requireWatermarkCheck ?? false;
+  const watermarkExtractor = typeof options.extractWatermark === "function"
+    ? options.extractWatermark
+    : null;
 
   const fail = (reason, details = {}, checks = {}) => {
     const protocolValid = checks.protocol_valid ?? false;
@@ -642,6 +651,7 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
     const watermarkHex = proofPackage.watermark_hex;
     const watermarkPayloadField = proofPackage.watermark_payload;
     let watermarkPayload;
+    let effectiveWatermarkStatus = watermarkStatus;
 
     if (typeof watermarkHex === "string" && typeof watermarkPayloadField === "string") {
       const fromHex = decodeProofBytes(watermarkHex, "watermark_hex", 8);
@@ -660,6 +670,35 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
       watermarkPayload = fromHex;
     } else {
       watermarkPayload = decodeProofBytes(watermarkHex ?? watermarkPayloadField, "watermark_payload", 8);
+    }
+
+    if (watermarkExtractor) {
+      try {
+        const extraction = watermarkExtractor(audioBuffer, watermarkPayload);
+        const extracted = extraction && typeof extraction.then === "function"
+          ? null
+          : extraction;
+
+        if (extracted && typeof extracted === "object") {
+          if (extracted.recovered === true) {
+            effectiveWatermarkStatus = "present";
+          } else if ((extracted.sync_quality ?? 0) >= 0.25 || (extracted.bit_match_ratio ?? 0) >= 0.5) {
+            effectiveWatermarkStatus = "degraded";
+          } else {
+            effectiveWatermarkStatus = "missing";
+          }
+        }
+      } catch {
+        effectiveWatermarkStatus = "degraded";
+      }
+    } else if (requireWatermarkCheck) {
+      return fail("WATERMARK_CHECK_REQUIRED", {
+        error: "watermark extraction is required but no extractor was provided"
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true
+      });
     }
 
     const timestamp = Number(proofPackage.timestamp);
@@ -725,14 +764,14 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
     const valid = crypto.verify(null, messageDigest, publicKey, signature);
     const cryptographicValid = valid;
     const trustLevel = cryptographicValid
-      ? (watermarkStatus === "present" ? "HIGH" : "PARTIAL")
+      ? (effectiveWatermarkStatus === "present" ? "HIGH" : "PARTIAL")
       : "LOW";
 
     return {
       ok: cryptographicValid,
       reason: cryptographicValid ? "VALID" : "INVALID_SIGNATURE",
       cryptographic_valid: cryptographicValid,
-      watermark: watermarkStatus,
+      watermark: effectiveWatermarkStatus,
       identity_valid: true,
       metadata_consistent: true,
       protocol_valid: true,
