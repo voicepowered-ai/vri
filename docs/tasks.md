@@ -37,3 +37,10 @@
 - [x] KMS/HSM-backed signing flow (createKmsKeyManager adapter + test coverage)
 - [x] External batch publication with confirmation tracking
 - [x] Compliance and interoperability test suite against protocol fixtures (fixtures.test.js)
+
+## Next Milestones
+
+- [ ] Introduce remote registry integration (mainnet anchor provider)
+- [ ] Add service endpoints for proof-package signing and verification with key rotation
+- [ ] Ship reference dashboards for licensing and monetization flows
+- [ ] Expand to wallet-bound claims and programmable access control

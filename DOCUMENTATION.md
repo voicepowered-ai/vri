@@ -65,6 +65,13 @@ These files provide reproducible verification of the documentation release itsel
 - SDKs: ⚠️ partial (CLI and package modules available; standalone multi-language SDKs are not included).
 - Deployment integrations: ⚠️ partial (local and pluggable storage backends plus external anchor publication are implemented; production cloud deployment blueprints are still in progress).
 
+## Next Milestones
+
+- [ ] Introduce remote registry integration (mainnet anchor provider).
+- [ ] Add service endpoints for proof-package signing and verification with key rotation.
+- [ ] Ship reference dashboards for licensing and monetization flows.
+- [ ] Expand to wallet-bound claims and programmable access control.
+
 ## Reading Order
 
 1. [README.md](./README.md)
