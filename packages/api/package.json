@@ -1,0 +1,11 @@
+{
+  "name": "@vri/api",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/server.js",
+  "dependencies": {
+    "@vri/core": "0.1.0",
+    "@vri/ledger": "0.1.0",
+    "@vri/watermark": "0.1.0"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "invalid-case-001-tampered-audio",
+  "description": "Audio does not match the proof package signature",
+  "protocol_version": "1.0",
+  "input": {
+    "audio": {
+      "format": "RIFF WAVE",
+      "channels": 1,
+      "sample_rate": 48000,
+      "bits_per_sample": 16,
+      "note": "This audio has been modified after proof generation"
+    },
+    "proof_package": {
+      "protocol_version": "1.0",
+      "voice_id": "vri_abc123def456",
+      "audio_digest": "sha256_original_audio",
+      "signature": "valid_ed25519_sig_for_original"
+    }
+  },
+  "expected_output": {
+    "verification_result": {
+      "ok": false,
+      "reason": "audio_mismatch",
+      "message": "canonical audio digest does not match proof"
+    }
+  },
+  "verification": {
+    "should_pass": false,
+    "reason": "Deliberate tampering: audio differs from original"
+  }
+}

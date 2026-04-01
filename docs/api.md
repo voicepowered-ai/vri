@@ -1,360 +1,432 @@
 # API Reference
 
-## Base URL
+## Status
 
-**Production**: `https://api.vri.app/v1`  
-**Staging**: `https://staging-api.vri.app/v1`  
-**Development**: `http://localhost:3000/v1`
+This document describes the API surface currently implemented in the local Node reference server at [packages/api/src/server.js](../packages/api/src/server.js).
 
----
+Current local base URL:
 
-## Authentication
-
-All requests require an API key via header:
-
-```
-Authorization: Bearer YOUR_API_KEY
+```text
+http://localhost:8787
 ```
 
-Or via query parameter (less secure, for testing only):
+This is a developer-oriented reference implementation. It does not currently implement authentication, rate limiting, remote storage, or external blockchain anchoring.
 
-```
-?api_key=YOUR_API_KEY
-```
+## Implemented Endpoints
 
-### Rate Limits
+- `GET /health`
+- `GET /ledger/status`
+- `POST /register`
+- `POST /verify`
+- `POST /verify-proof`
+- `GET /events/:event_id`
+- `GET /batches/:batch_id`
+- `POST /batches/:batch_id/publish-anchor`
+- `GET /proofs/:event_id`
 
-```
-Standard Tier:  1,000 req/min
-Pro Tier:       10,000 req/min
-Enterprise:     Custom
+## GET /health
 
-Rate limit headers:
-  X-RateLimit-Limit: 1000
-  X-RateLimit-Remaining: 998
-  X-RateLimit-Reset: 1711892460
-
-If exceeded: HTTP 429 Too Many Requests
-```
-
----
-
-## POST /generate
-
-Create a proof-carrying audio artifact with VRI watermarking and signing.
-
-### Request
-
-```json
-{
-  "text": "Hello, this is an AI voice",
-  "voice_id": "voice_xyz123",
-  "model": "openai-tts",
-  "model_params": {
-    "voice": "nova",
-    "speed": 1.0
-  },
-  "metadata": {
-    "request_id": "req_123456",
-    "model_id": "tts-v3",
-    "tenant_id": "org_789",
-    "operation": "voice_synthesis"
-  },
-  "quality": "high"
-}
-```
-
-### Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `text` | string | ✓ | Text to synthesize (max 4000 chars) |
-| `voice_id` | string | ✓ | Creator's unique voice identifier |
-| `model` | enum | ✓ | TTS model: `openai-tts`, `elevenlabs`, `google-tts`, `custom` |
-| `model_params` | object | | Model-specific parameters (voice, speed, etc.) |
-| `metadata` | object | | Inference-scoped metadata (request, model, tenant, operation) |
-| `quality` | enum | | Audio quality: `low` (8kHz), `medium` (22kHz), `high` (44kHz) |
+Basic liveness check.
 
 ### Response
 
 ```json
 {
-  "request_id": "req_abc123def456",
-  "audio_url": "https://cdn.vri.app/audio/uuid-abcd1234.wav",
-  "audio_duration_seconds": 4.23,
-  "watermark": {
-    "payload": "AyJ...=",
-    "payload_hex": "0x2f8bafbc...",
-    "embedded": true,
-    "quality": {
-      "snr_db": 42.3,
-      "confidence": 0.99
-    }
-  },
-  "signature": {
-    "value": "3c4e7a2b1f9d8e5c6a3b2f0d7e4a1c9b5d6c7a8f...",
-    "algorithm": "EdDSA",
-    "curve": "Ed25519"
-  },
-  "proof_package": {
-    "watermark": {...},
-    "signature": {...},
-    "creator": {...},
-    "metadata": {...},
-    "ledger": {...},
-    "verification": {...}
-  },
-  "created_at": 1711892400
+  "status": "ok",
+  "service": "vri-api"
 }
 ```
 
-### Status Codes
+## GET /ledger/status
 
-| Code | Description |
-|------|-------------|
-| 200 | Success |
-| 400 | Invalid parameters |
-| 401 | Authentication failed |
-| 429 | Rate limit exceeded |
-| 500 | Server error (retry safe) |
+Returns the current local ledger status.
 
----
+### Response
+
+```json
+{
+  "event_count": 1,
+  "batch_count": 1,
+  "pending_event_count": 0,
+  "latest_batch_id": "batch_abc123",
+  "latest_batch_root": "0x..."
+}
+```
+
+## POST /register
+
+Registers an audio artifact, emits a `Proof Package`, and records a local `Usage Event`.
+
+### Request
+
+```json
+{
+  "audioBase64": "UklGR...",
+  "anchorNow": true,
+  "registry": "vri:testnet",
+  "model": "tts-v3",
+  "provider": "local",
+  "verificationEndpoint": "http://localhost:8787/verify-proof",
+  "metadata": {
+    "model_id": "tts-v3",
+    "operation": "voice_synthesis",
+    "request_id": "req_123456",
+    "tenant_id": "org_789"
+  }
+}
+```
+
+### Fields
+
+| Field | Type | Required | Notes |
+|------|------|----------|------|
+| `audioBase64` | string | yes | WAV audio payload encoded as base64. Supports PCM 16-bit, 24-bit, and IEEE float32. Any sample rate is resampled to canonical 48 kHz deterministically. |
+| `anchorNow` | boolean | no | If `true`, immediately anchors pending events into a local batch |
+| `registry` | string | no | Registry label for the generated proof |
+| `model` | string | no | Optional model hint stored in the ledger event |
+| `provider` | string | no | Optional provider hint stored in the ledger event |
+| `verificationEndpoint` | string | no | Included in the proof package |
+| `metadata` | object | no | Must be a JSON object |
+
+### Response
+
+```json
+{
+  "voiceId": "vri_41182e0817c1197a",
+  "status": "registered",
+  "complianceLevel": 3,
+  "fingerprint": "fp_...",
+  "audioHash": "41182e0817c1197a...",
+  "registry": "vri:testnet",
+  "createdAt": "2026-03-31T21:34:37.000Z",
+  "proofPackage": {
+    "protocol_version": "1.0",
+    "compliance_level": 3,
+    "watermark_format_version": "1.0",
+    "watermark_payload": "base64(...)",
+    "watermark_hex": "0x...",
+    "audio_hash": "0x...",
+    "signature": {
+      "algorithm": "Ed25519",
+      "value": "0x..."
+    },
+    "public_key": "0x...",
+    "creator_id": "0x...",
+    "timestamp": 1774992877,
+    "metadata": {
+      "model_id": "tts-v3",
+      "operation": "voice_synthesis",
+      "request_id": "req_123456",
+      "tenant_id": "org_789"
+    },
+    "canonical_metadata": "{\"model_id\":\"tts-v3\",\"operation\":\"voice_synthesis\",\"request_id\":\"req_123456\",\"tenant_id\":\"org_789\"}",
+    "usage_event_id": "evt_...",
+    "ledger_anchor": "0x...",
+    "verification_endpoint": "http://localhost:8787/verify-proof",
+    "extensions": {}
+  },
+  "proof_package": {
+    "protocol_version": "1.0",
+    "compliance_level": 3,
+    "watermark_format_version": "1.0",
+    "watermark_payload": "base64(...)",
+    "watermark_hex": "0x...",
+    "audio_hash": "0x...",
+    "signature": {
+      "algorithm": "Ed25519",
+      "value": "0x..."
+    },
+    "public_key": "0x...",
+    "creator_id": "0x...",
+    "timestamp": 1774992877,
+    "metadata": {
+      "model_id": "tts-v3",
+      "operation": "voice_synthesis",
+      "request_id": "req_123456",
+      "tenant_id": "org_789"
+    },
+    "canonical_metadata": "{\"model_id\":\"tts-v3\",\"operation\":\"voice_synthesis\",\"request_id\":\"req_123456\",\"tenant_id\":\"org_789\"}",
+    "usage_event_id": "evt_...",
+    "ledger_anchor": "0x...",
+    "verification_endpoint": "http://localhost:8787/verify-proof",
+    "extensions": {}
+  },
+  "ledger_event": {
+    "event_id": "evt_...",
+    "ledger_batch_id": "batch_...",
+    "ledger_anchor": "0x...",
+    "batch_anchor": "0x..."
+  },
+  "batch_publication": {
+    "published": false,
+    "confirmed": false,
+    "provider": null,
+    "network": null,
+    "transaction_hash": null,
+    "external_anchor_id": null,
+    "published_at": null
+  },
+  "watermark": {
+    "embedded": false,
+    "mode": "vri-spread-spectrum-v1"
+  }
+}
+```
+
+Notes:
+
+- `complianceLevel` is `2` when the event has been recorded but not yet batch-anchored.
+- `complianceLevel` is `3` when the event has been assigned a local ledger batch root.
+- Both `proofPackage` and `proof_package` are returned for convenience. They currently carry the same object.
 
 ## POST /verify
 
-Verify an emitted audio artifact and optionally record a verification event.
+Validates the format of a VRI voice identifier.
 
 ### Request
 
 ```json
 {
-  "audio_url": "https://example.com/audio.wav",
-  "audio_buffer": "base64(...)",
-  "proof_package": {
-    "watermark": {...},
-    "signature": {...},
-    "creator": {...},
-    "metadata": {...}
-  },
-  "expected_creator": "0x2f8bafbc",
-  "context": {
-    "request_id": "req_123456",
-    "model_id": "tts-v3",
-    "tenant_id": "org_789",
-    "operation": "voice_synthesis"
-  }
+  "voiceId": "vri_41182e0817c1197a",
+  "registry": "vri:testnet"
 }
 ```
-
-### Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `audio_url` | string | | URL to audio file (mutually exclusive with `audio_buffer`) |
-| `audio_buffer` | string (base64) | | Audio file as base64 (mutually exclusive with `audio_url`) |
-| `proof_package` | object | | Optional proof package for comparison |
-| `expected_creator` | string | | Expected creator ID (for validation) |
-| `context` | object | | Verification-scoped context (request, model, tenant, operation) |
 
 ### Response
 
-**Watermark Found (Verified)**:
+```json
+{
+  "voiceId": "vri_41182e0817c1197a",
+  "status": "verified",
+  "authenticity": "confirmed",
+  "registry": "vri:testnet",
+  "checkedAt": "2026-03-31T21:34:37.000Z"
+}
+```
+
+## POST /verify-proof
+
+Runs cryptographic verification over the presented audio and proof package, then validates local ledger consistency and Merkle inclusion where available.
+
+### Request
 
 ```json
 {
-  "verified": true,
-  "status": "authentic_watermark",
-  "creator_id": "0x2f8bafbc",
-  "creator_name": "Jane Creator",
-  "created_at": 1711892400,
-  "confidence": 1.0,
-  "usage_recorded": {
-    "event_id": "evt_xyz123",
-    "timestamp": 1711892405
-  },
-  "metadata": {
-    "watermark_extracted": true,
-    "signature_valid": true,
-    "watermark_ber": 0.08,
-    "processing_time_ms": 350
+  "audioBase64": "UklGR...",
+  "proofPackage": {
+    "protocol_version": "1.0",
+    "audio_hash": "0x...",
+    "watermark_payload": "base64(...)",
+    "watermark_hex": "0x...",
+    "signature": {
+      "algorithm": "Ed25519",
+      "value": "0x..."
+    },
+    "public_key": "0x...",
+    "creator_id": "0x...",
+    "timestamp": 1774992877,
+    "metadata": {},
+    "canonical_metadata": "{}",
+    "usage_event_id": "evt_...",
+    "ledger_anchor": "0x..."
   }
 }
 ```
 
-**Watermark Not Found (Fingerprint Forensic Detection)**:
+### Response
 
 ```json
 {
-  "verified": false,
-  "status": "watermark_not_found",
-  "confidence": 0.0,
-  "usage_recorded": false,
-  "fingerprint_matches": [
+  "ok": true,
+  "reason": "VALID",
+  "details": {
+    "mode": "v1.0",
+    "audioHash": "41182e0817c1197a...",
+    "messageDigest": "c6fe53f23474971a..."
+  },
+  "ledger": {
+    "ok": true,
+    "reason": "LEDGER_CONFIRMED",
+    "event": {
+      "event_id": "evt_..."
+    },
+    "batch": {
+      "batch_id": "batch_...",
+      "root_hash": "0x..."
+    },
+    "merkle_proof": {
+      "leaf_hash": "0x...",
+      "root_hash": "0x...",
+      "proof": [],
+      "verified": true
+    }
+  }
+}
+```
+
+## GET /events/:event_id
+
+Retrieves a recorded ledger event.
+
+### Response
+
+```json
+{
+  "event_id": "evt_...",
+  "creator_id": "0x...",
+  "public_key": "0x...",
+  "audio_hash": "0x...",
+  "watermark_payload": "base64(...)",
+  "timestamp": 1774993174,
+  "status": "RECORDED",
+  "model": "tts-v3",
+  "provider": "local",
+  "metadata": {
+    "request_id": "req_123456"
+  },
+  "canonical_metadata": "{\"request_id\":\"req_123456\"}",
+  "verification_endpoint": "http://localhost:8787/verify-proof",
+  "ledger_batch_id": "batch_...",
+  "sequence": 1,
+  "previous_anchor": "0x...",
+  "content_hash": "0x...",
+  "chain_anchor": "0x...",
+  "ledger_anchor": "0x...",
+  "batch_anchor": "0x...",
+  "recorded_at": 1774993174,
+  "batch_publication": {
+    "published": false,
+    "confirmed": false,
+    "provider": null,
+    "network": null,
+    "transaction_hash": null,
+    "external_anchor_id": null,
+    "published_at": null
+  }
+}
+```
+
+## GET /batches/:batch_id
+
+Retrieves a local anchored batch record.
+
+### Response
+
+```json
+{
+  "batch_id": "batch_...",
+  "root_hash": "0x...",
+  "event_count": 1,
+  "event_ids": [
+    "evt_..."
+  ],
+  "previous_batch_anchor": "0x...",
+  "batch_anchor": "0x...",
+  "anchor_time": 1774993174,
+  "blockchain_chain": null,
+  "blockchain_tx": null,
+  "blockchain_confirmed": false
+}
+```
+
+## POST /batches/:batch_id/publish-anchor
+
+Publishes a batch root to an external anchor provider and stores the resulting publication state on the batch.
+
+### Request
+
+```json
+{
+  "provider": "external-http",
+  "network": "sepolia",
+  "endpoint": "https://anchor-provider.example/publish"
+}
+```
+
+`endpoint` is required unless `VRI_EXTERNAL_ANCHOR_URL` is set in the environment.
+
+### Response
+
+```json
+{
+  "batch_id": "batch_...",
+  "root_hash": "0x...",
+  "event_count": 1,
+  "event_ids": [
+    "evt_..."
+  ],
+  "previous_batch_anchor": "0x...",
+  "batch_anchor": "0x...",
+  "anchor_time": 1774993174,
+  "blockchain_chain": "sepolia",
+  "blockchain_tx": "0x...",
+  "blockchain_confirmed": true,
+  "external_anchor_provider": "external-http",
+  "external_anchor_id": "anchor_..."
+}
+```
+
+## GET /proofs/:event_id
+
+Returns the Merkle inclusion proof for an event inside its batch.
+
+### Response
+
+```json
+{
+  "event": {
+    "event_id": "evt_..."
+  },
+  "batch": {
+    "batch_id": "batch_...",
+    "root_hash": "0x..."
+  },
+  "proof": [
     {
-      "creator_id": "0x1a2b3c4d",
-      "creator_name": "Reference Voice",
-      "confidence": 0.85
+      "position": "right",
+      "hash": "0x..."
     }
   ],
-  "metadata": {
-    "watermark_extracted": false,
-    "fingerprint_extracted": true,
-    "processing_time_ms": 1200
+  "leaf_hash": "0x...",
+  "root_hash": "0x...",
+  "verified": true,
+  "batch_publication": {
+    "published": false,
+    "confirmed": false,
+    "provider": null,
+    "network": null,
+    "transaction_hash": null,
+    "external_anchor_id": null,
+    "published_at": null
   }
 }
 ```
 
-### Status Codes
+For single-event batches, the proof array may be empty because the leaf hash is already the batch root.
 
-| Code | Description |
-|------|-------------|
-| 200 | Success (verified or unverified) |
-| 400 | Invalid audio/proof |
-| 401 | Authentication failed |
-| 429 | Rate limit exceeded |
-| 500 | Processing error |
+## Error Shapes
 
----
-
-## GET /events/{event_id}
-
-Retrieve usage event details.
-
-### Request
-
-```
-GET /v1/events/evt_abc123def456
-Authorization: Bearer YOUR_API_KEY
-```
-
-### Response
+Typical API errors look like:
 
 ```json
 {
-  "event_id": "evt_abc123def456",
-  "creator_id": "0x2f8bafbc",
-  "creator_name": "Jane Creator",
-  "audio_hash": "8b3f1c...",
-  "timestamp": 1711892405,
-  "source_system": "verification_service",
-  "context": {
-    "request_id": "req_123456",
-    "tenant_id": "org_789",
-    "device_class": "desktop"
-  },
-  "ledger_confirmed": true,
-  "ledger_anchor": "0xbca3...",
-  "batch_id": "batch_xyz"
+  "error": "audioBase64 is required"
 }
 ```
 
----
-
-## GET /status
-
-System health check.
-
-### Request
-
-```
-GET /v1/status
-```
-
-### Response
+Or:
 
 ```json
 {
-  "status": "operational",
-  "timestamp": 1711895600,
-  "components": {
-    "api": "operational",
-    "watermarking": "operational",
-    "verification": "operational",
-    "ledger": "operational",
-    "blockchain": "operational"
-  },
-  "metrics": {
-    "events_per_second": 234,
-    "avg_verification_time_ms": 380,
-    "blockchain_latency_seconds": 480,
-    "ledger_sync_status": "synced"
-  }
+  "error": "internal_error",
+  "message": "Detailed failure message"
 }
 ```
 
----
+## Notes
 
-## Error Responses
-
-All errors follow this format:
-
-```json
-{
-  "error": {
-    "code": "INVALID_AUDIO",
-    "message": "Audio file could not be decoded.",
-    "details": {
-      "format": "unknown",
-      "size_bytes": 1024
-    }
-  },
-  "request_id": "req_xyz123"
-}
-```
-
-### Common Error Codes
-
-| Code | HTTP | Description |
-|------|------|-------------|
-| INVALID_API_KEY | 401 | API key missing or invalid |
-| RATE_LIMIT_EXCEEDED | 429 | Too many requests |
-| INVALID_AUDIO | 400 | Audio file invalid or corrupted |
-| INVALID_PROOF_PACKAGE | 400 | Proof package format error |
-| INVALID_ACCOUNTING_STATE | 400 | Usage accounting state invalid |
-| SETTLEMENT_UNAVAILABLE | 500 | Settlement subsystem unavailable |
-| SERVICE_UNAVAILABLE | 503 | Service temporarily unavailable |
-
----
-
-## Webhooks (Beta)
-
-Subscribe to verification events delivered to your endpoint:
-
-### Register Webhook
-
-```
-POST /v1/webhooks
-
-{
-  "url": "https://yourapp.com/vri-webhook",
-  "events": ["usage_recorded", "ledger_anchored"]
-}
-```
-
-### Webhook Payload
-
-```json
-{
-  "event": "usage_recorded",
-  "timestamp": 1711892405,
-  "data": {
-    "event_id": "evt_abc123",
-    "creator_id": "0x2f8bafbc",
-    "source_system": "verification_service",
-    "request_id": "req_123456"
-  }
-}
-```
-
----
-
-## SDKs & Libraries
-
-- **JavaScript/Node.js**: `npm install @vri/sdk`
-- **Python**: `pip install vri-sdk`
-- **Go**: `go get github.com/vrihq/vri-go`
-- **Rust**: `cargo add vri`
-
----
-
-**Next**: See [Data Model](./data-model.md) for schema details.
+- The current implementation is local-first and file-backed.
+- Ledger events and batches are local, while external anchor publication is performed via an HTTP provider integration.
+- External publication requires either request-level `endpoint` or `VRI_EXTERNAL_ANCHOR_URL`.
+- Watermark embedding and extraction use the production spread-spectrum engine with ECC and synchronization.
+- The cryptographic proof package, canonical metadata serialization, ledger events, batches, and Merkle inclusion proofs are implemented and tested in the repository.

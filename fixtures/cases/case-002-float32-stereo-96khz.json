@@ -1,0 +1,46 @@
+{
+  "id": "case-002-float32-stereo-96khz",
+  "description": "IEEE float32 stereo 96 kHz input with resampling to canonical 48 kHz",
+  "protocol_version": "1.0",
+  "input": {
+    "audio": {
+      "format": "RIFF WAVE IEEE float32",
+      "channels": 2,
+      "sample_rate": 96000,
+      "bits_per_sample": 32,
+      "duration_ms": 500,
+      "notes": "Wider audio support: float32 PCM is canonical audio input"
+    },
+    "metadata": {
+      "model_id": "tts-v4-multilingual",
+      "operation": "voice_synthesis",
+      "request_id": "req_test_002",
+      "tenant_id": "org_test"
+    },
+    "timestamp": 1711892401,
+    "nonce": 2
+  },
+  "expected_output": {
+    "proof_package": {
+      "protocol_version": "1.0",
+      "voice_id": "vri_*",
+      "voice_fingerprint": "fp_*",
+      "audio_digest": "sha256_24000_samples",
+      "creator_id": "creator_*",
+      "public_key": "0x*",
+      "timestamp": 1711892401,
+      "nonce": 2,
+      "watermark": {
+        "mode": "vri-spread-spectrum-v1",
+        "embedding_strength": 0.15,
+        "is_embedded": true
+      },
+      "metadata_hash": "sha256_canonical_metadata",
+      "signature": "ed25519_sig_*"
+    }
+  },
+  "verification": {
+    "should_pass": true,
+    "reason": "Float32 stereo correctly resampled to 48 kHz canonical form"
+  }
+}

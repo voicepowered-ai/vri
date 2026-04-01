@@ -97,6 +97,18 @@ Generate an example audio artifact:
 node examples/generate-audio.js
 ```
 
+Start the Node reference API:
+
+```bash
+node packages/api/src/server.js
+```
+
+Use the Node CLI scaffold:
+
+```bash
+node packages/cli/src/index.js register examples/test/audio.wav
+```
+
 Reference CLI shape for a future VRI command:
 
 ```bash
@@ -160,6 +172,15 @@ Returns:
 
 The executable code currently lives under [examples/generate-audio.js](./examples/generate-audio.js) and [examples/verify-audio.js](./examples/verify-audio.js). These examples demonstrate the local verification flow already present in the repository without introducing a separate SDK layer.
 
+## Node Architecture
+
+For a native JavaScript implementation path, the repository now includes a lightweight package layout:
+
+- `packages/core`: protocol-safe hashing, fingerprinting, registration, and verification primitives.
+- `packages/api`: minimal HTTP surface for register and verify flows.
+- `packages/cli`: CLI scaffold for local developer workflows.
+- `packages/watermark`: placeholder interface where a future DSP-backed watermark engine can plug in.
+
 ## Use Cases
 
 - AI companies registering synthetic voices before commercial deployment.
@@ -177,6 +198,12 @@ assets/
   demo.gif
   logo.png
   logo-readme.png
+packages/
+  core/
+  api/
+  cli/
+  ledger/
+  watermark/
 examples/
   generate-audio.js
   verify-audio.js
@@ -186,16 +213,32 @@ docs/
   verification.md
   system-overview.md
 README.md
+package.json
 ```
 
 ## Roadmap
 
+### Core Audio & Cryptography (MVP) ✅
 - [x] Publish protocol and whitepaper foundation.
 - [x] Add branded repository assets and example tooling references.
-- [ ] Introduce remote registry integration.
-- [ ] Add service endpoints for proof-package signing and verification.
+- [x] Add local ledger batches and Merkle inclusion proofs.
+- [x] **Canonical Audio pipeline** with deterministic resampling (16/24/32-bit PCM WAV, 44.1–96 kHz → 48 kHz).
+- [x] **Watermark engine** (Hamming(7,4) ECC, sync word, blind extraction).
+- [x] **Key management** with rotation, private key protection, and KMS/HSM adapter support.
+- [x] **Production-grade external anchor** publication with HTTP integration and error handling.
+- [x] **CLI commands** for querying events, batches, and proofs.
+- [x] **API batch publication state** surfaced cleanly in register responses.
+
+### Protocol & Compatibility (In Progress)
+- [x] Protocol fixtures and validator for schema compliance.
+- [ ] Introduce remote registry integration (mainnet anchor provider).
+- [ ] Add service endpoints for proof-package signing and verification with key rotation.
 - [ ] Ship reference dashboards for licensing and monetization flows.
 - [ ] Expand to wallet-bound claims and programmable access control.
+
+## Tasks
+
+The live implementation task list is tracked in [docs/tasks.md](./docs/tasks.md).
 
 ## Vision
 
