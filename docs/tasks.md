@@ -22,16 +22,18 @@
 
 ## Beta Track
 
-- [x] External anchoring integration shape beyond simulation
-- [ ] Reference storage backend beyond local JSONL files
-- [ ] Auth, multitenancy, and audit logging
-- [ ] Background anchoring scheduler and retry policy
-- [ ] Performance profiling for DSP-heavy paths
+- [x] Storage abstraction layer with pluggable backends (JSONL, Memory, Postgres, MongoDB)
+- [x] Audit logging for voice registration, verification, anchoring events
+- [x] API key auth with Bearer token validation and role-based access control
+- [x] Multitenancy support (organizations/workspaces per API key with quota management)
+- [x] Reference storage backend beyond local JSONL files (MongoDB selected as beta default)
+- [x] Background anchoring scheduler and retry policy
+- [x] Performance profiling for DSP-heavy paths
 
 ## Production Track
 
 - [x] Robust watermarking with ECC, synchronization, and transform resistance
-- [ ] Worker Thread or WASM acceleration for DSP kernels
-- [ ] KMS/HSM-backed signing flow
+- [x] Worker Thread acceleration for DSP kernels (DspPool + dsp-worker.js)
+- [x] KMS/HSM-backed signing flow (createKmsKeyManager adapter + test coverage)
 - [x] External batch publication with confirmation tracking
-- [ ] Compliance and interoperability test suite against protocol fixtures
+- [x] Compliance and interoperability test suite against protocol fixtures (fixtures.test.js)

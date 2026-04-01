@@ -10,19 +10,70 @@ Current local base URL:
 http://localhost:8787
 ```
 
-This is a developer-oriented reference implementation. It does not currently implement authentication, rate limiting, remote storage, or external blockchain anchoring.
+## Authentication (Beta)
+
+API endpoints support optional Bearer token authentication via the `Authorization` header:
+
+```
+Authorization: Bearer <api_key>
+```
+
+When authentication is enabled (`requireAuth: true` in server options), all requests require a valid API key. API keys are generated per organization and have role-based permissions:
+
+- `admin`: Full access to all operations, including API key management and audit logs
+- `user`: Can register voices, verify proofs, and publish anchors
+- `readonly`: Can only query events, verify proofs, and list organizations
+
+Organizations have per-hour quota limits on registrations (default: 100/hour).
+
+### Authentication Endpoints
+
+- `POST /api-keys/create` — Create a new API key for an organization (requires `admin` role)
+- `GET /api-keys` — List API keys for the authenticated organization (requires `admin` role)
+- `GET /organizations/me` — Get current organization metadata (requires authentication)
+
+This is a developer-oriented reference implementation. It includes optional API key authentication, local or pluggable storage backends, and external batch anchor publication.
+
+### MongoDB Backend (Preferred Beta Reference)
+
+To run the ledger on MongoDB, construct the server with a Mongo client/database and set `storageBackend: "mongodb"`:
+
+```js
+import { MongoClient } from "mongodb";
+import { startServer } from "@vri/api";
+
+const client = new MongoClient(process.env.MONGODB_URI);
+await client.connect();
+
+startServer({
+  storageBackend: "mongodb",
+  mongoClient: client,
+  mongoDb: client.db(process.env.MONGODB_DB || "vri")
+});
+```
+
+Collections used by default:
+
+- `vri_events`
+- `vri_batches`
 
 ## Implemented Endpoints
 
 - `GET /health`
 - `GET /ledger/status`
-- `POST /register`
-- `POST /verify`
+- `GET /scheduler/status`
+- `GET /profiling/metrics` (requires admin role if authenticated)
+- `GET /audit-log` (requires admin role)
+- `POST /register` (requires user role if authenticated)
+- `POST /verify` (requires user role if authenticated)
 - `POST /verify-proof`
 - `GET /events/:event_id`
 - `GET /batches/:batch_id`
-- `POST /batches/:batch_id/publish-anchor`
+- `POST /batches/:batch_id/publish-anchor` (requires user role if authenticated)
 - `GET /proofs/:event_id`
+- `POST /api-keys/create` (requires admin role)
+- `GET /api-keys` (requires admin role)
+- `GET /organizations/me` (requires authentication)
 
 ## GET /health
 
@@ -329,11 +380,63 @@ Retrieves a local anchored batch record.
 }
 ```
 
+## GET /profiling/metrics
+
+Returns accumulated runtime metrics for DSP-heavy and ledger operations.
+
+### Response
+
+```json
+{
+  "metricCount": 3,
+  "metrics": {
+    "dsp.watermark.embed_ms": {
+      "count": 1,
+      "avgMs": 4.3,
+      "totalMs": 4.3,
+      "minMs": 4.3,
+      "maxMs": 4.3,
+      "lastMs": 4.3
+    }
+  }
+}
+```
+
+## GET /scheduler/status
+
+Returns current scheduler queue metrics and queue items.
+
+### Response
+
+```json
+{
+  "status": {
+    "queued": 0,
+    "publishing": 0,
+    "published": 1,
+    "failed": 0,
+    "paused": 0,
+    "total": 1,
+    "isProcessing": true
+  },
+  "queue": [
+    {
+      "batchId": "batch_...",
+      "state": "published",
+      "scheduledAt": "2026-04-01T12:00:00.000Z",
+      "retryInfo": null
+    }
+  ]
+}
+```
+
 ## POST /batches/:batch_id/publish-anchor
 
 Publishes a batch root to an external anchor provider and stores the resulting publication state on the batch.
 
 ### Request
+
+Synchronous publish (default):
 
 ```json
 {
@@ -343,7 +446,19 @@ Publishes a batch root to an external anchor provider and stores the resulting p
 }
 ```
 
+Asynchronous publish via scheduler:
+
+```json
+{
+  "async": true,
+  "provider": "external-http",
+  "network": "sepolia",
+  "endpoint": "https://anchor-provider.example/publish"
+}
+```
+
 `endpoint` is required unless `VRI_EXTERNAL_ANCHOR_URL` is set in the environment.
+When `async` is `true`, the endpoint returns `202` with scheduling metadata.
 
 ### Response
 

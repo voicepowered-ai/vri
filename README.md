@@ -179,7 +179,7 @@ For a native JavaScript implementation path, the repository now includes a light
 - `packages/core`: protocol-safe hashing, fingerprinting, registration, and verification primitives.
 - `packages/api`: minimal HTTP surface for register and verify flows.
 - `packages/cli`: CLI scaffold for local developer workflows.
-- `packages/watermark`: placeholder interface where a future DSP-backed watermark engine can plug in.
+- `packages/watermark`: production watermark engine with robust embedding and extraction primitives.
 
 ## Use Cases
 
@@ -218,19 +218,32 @@ package.json
 
 ## Roadmap
 
-### Core Audio & Cryptography (MVP) ✅
+### MVP Track ✅
 - [x] Publish protocol and whitepaper foundation.
-- [x] Add branded repository assets and example tooling references.
 - [x] Add local ledger batches and Merkle inclusion proofs.
-- [x] **Canonical Audio pipeline** with deterministic resampling (16/24/32-bit PCM WAV, 44.1–96 kHz → 48 kHz).
-- [x] **Watermark engine** (Hamming(7,4) ECC, sync word, blind extraction).
-- [x] **Key management** with rotation, private key protection, and KMS/HSM adapter support.
-- [x] **Production-grade external anchor** publication with HTTP integration and error handling.
-- [x] **CLI commands** for querying events, batches, and proofs.
-- [x] **API batch publication state** surfaced cleanly in register responses.
+- [x] Canonical Audio pipeline with deterministic resampling (16/24/32-bit PCM WAV, 44.1-96 kHz -> 48 kHz).
+- [x] Production watermark engine (Hamming(7,4) ECC, sync word, blind extraction).
+- [x] Key management with rotation and private key protection.
+- [x] External anchor publication for batches.
+- [x] CLI commands for querying events, batches, and proofs.
+- [x] API batch publication state in register responses.
 
-### Protocol & Compatibility (In Progress)
-- [x] Protocol fixtures and validator for schema compliance.
+### Beta Track ✅
+- [x] Storage abstraction layer with pluggable backends (JSONL, Memory, Postgres, MongoDB).
+- [x] Reference storage backend beyond local JSONL files (MongoDB selected as beta default).
+- [x] Audit logging for voice registration, verification, and anchoring events.
+- [x] API key authentication with role-based access control.
+- [x] Multitenancy with organization-level quota management.
+- [x] Background anchoring scheduler with retry policy.
+- [x] Performance profiling for DSP-heavy paths.
+
+### Production Track ✅
+- [x] Worker Thread DSP acceleration (`DspPool` + `dsp-worker.js`).
+- [x] KMS/HSM-backed signing flow (`createKmsKeyManager` adapter + tests).
+- [x] Compliance and interoperability suite against protocol fixtures.
+- [x] External batch publication with confirmation tracking.
+
+### Next Milestones
 - [ ] Introduce remote registry integration (mainnet anchor provider).
 - [ ] Add service endpoints for proof-package signing and verification with key rotation.
 - [ ] Ship reference dashboards for licensing and monetization flows.

@@ -8,13 +8,14 @@ import { createServer } from "../src/server.js";
 import { createKeyManager } from "../../core/src/key-manager.js";
 import { sha256Hex } from "../../core/src/index.js";
 
-async function startTestServer() {
+async function startTestServer(overrides = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "vri-ledger-test-"));
   const server = createServer({
     verificationEndpoint: "http://127.0.0.1/test/verify-proof",
     ledgerFilePath: path.join(tempDir, "events.jsonl"),
     batchFilePath: path.join(tempDir, "batches.jsonl"),
-    batchSize: 2
+    batchSize: 2,
+    ...overrides
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -74,6 +75,42 @@ test("GET /health responds with ok", async () => {
     assert.equal(response.status, 200);
     assert.equal(payload.status, "ok");
     assert.equal(payload.service, "vri-api");
+  } finally {
+    server.close();
+  }
+});
+
+test("GET /profiling/metrics returns profiler snapshot", async () => {
+  const { server, baseUrl } = await startTestServer();
+  const audio = await readFile("examples/test/audio.wav");
+
+  try {
+    await fetch(`${baseUrl}/register`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        audioBase64: audio.toString("base64"),
+        anchorNow: true,
+        metadata: {
+          model_id: "tts-v3",
+          operation: "voice_synthesis",
+          request_id: "req_api_perf_metrics",
+          tenant_id: "org_api"
+        }
+      })
+    });
+
+    const metricsResponse = await fetch(`${baseUrl}/profiling/metrics`);
+    const metrics = await metricsResponse.json();
+
+    assert.equal(metricsResponse.status, 200);
+    assert.equal(typeof metrics.metricCount, "number");
+    assert.equal(typeof metrics.metrics, "object");
+    assert.ok(metrics.metrics["dsp.watermark.embed_ms"]);
+    assert.ok(metrics.metrics["dsp.register_voice_ms"]);
+    assert.ok(metrics.metrics["ledger.append_usage_event_ms"]);
   } finally {
     server.close();
   }
@@ -374,6 +411,94 @@ test("POST /batches/:id/publish-anchor rejects missing external endpoint", async
 
     assert.equal(publishResponse.status, 400);
     assert.equal(errorBody.error, "EXTERNAL_ANCHOR_ENDPOINT_REQUIRED");
+  } finally {
+    server.close();
+  }
+});
+
+test("POST /batches/:id/publish-anchor supports async scheduling", async () => {
+  const { server, baseUrl } = await startTestServer({
+    schedulerConfig: {
+      initialDelayMs: 10,
+      maxDelayMs: 20,
+      jitterFactor: 0,
+      maxRetries: 2
+    }
+  });
+  const external = await startAnchorProviderServer();
+  const audio = await readFile("examples/test/audio.wav");
+
+  try {
+    const registerResponse = await fetch(`${baseUrl}/register`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        audioBase64: audio.toString("base64"),
+        anchorNow: true,
+        metadata: {
+          model_id: "tts-v3",
+          operation: "voice_synthesis",
+          request_id: "req_api_publish_anchor_async",
+          tenant_id: "org_api"
+        }
+      })
+    });
+    const registration = await registerResponse.json();
+    const batchId = registration.ledger_event.ledger_batch_id;
+
+    const scheduleResponse = await fetch(`${baseUrl}/batches/${encodeURIComponent(batchId)}/publish-anchor`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        async: true,
+        provider: "external-http",
+        network: "sepolia",
+        endpoint: external.endpoint
+      })
+    });
+    const scheduled = await scheduleResponse.json();
+
+    assert.equal(scheduleResponse.status, 202);
+    assert.equal(scheduled.scheduled, true);
+    assert.equal(scheduled.state, "pending");
+
+    let publishedBatch = null;
+    const deadline = Date.now() + 4000;
+
+    while (Date.now() < deadline) {
+      const batchResponse = await fetch(`${baseUrl}/batches/${encodeURIComponent(batchId)}`);
+      const batch = await batchResponse.json();
+      if (batch.external_anchor_id) {
+        publishedBatch = batch;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.ok(publishedBatch);
+    assert.equal(publishedBatch.external_anchor_provider, "external-http");
+    assert.equal(publishedBatch.blockchain_chain, "sepolia");
+  } finally {
+    external.server.close();
+    server.close();
+  }
+});
+
+test("GET /scheduler/status returns queue metrics", async () => {
+  const { server, baseUrl } = await startTestServer();
+
+  try {
+    const response = await fetch(`${baseUrl}/scheduler/status`);
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(typeof payload.status, "object");
+    assert.equal(typeof payload.status.total, "number");
+    assert.ok(Array.isArray(payload.queue));
   } finally {
     server.close();
   }

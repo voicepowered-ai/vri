@@ -315,6 +315,31 @@ export async function readCanonicalAudioInput(input) {
   return getCanonicalAudioBytes(audio);
 }
 
+/**
+ * Async variant: offloads canonicalization to a Worker Thread via DspPool.
+ * Use this in production HTTP handlers to keep the event loop responsive.
+ *
+ * @param {Buffer} buffer - Raw WAV buffer
+ * @param {import("./dsp-pool.js").DspPool} [pool] - Optional DspPool instance.
+ *   If omitted, creates a new single-worker pool and terminates it after use.
+ * @returns {Promise<Buffer>} Canonical 24-bit LE PCM at 48 kHz
+ */
+export async function canonicalizeWavTo24BitLEAsync(buffer, pool = null) {
+  const { createDspPool } = await import("./dsp-pool.js");
+  const ownPool = !pool;
+  const activePool = pool ?? createDspPool({ size: 1 });
+  try {
+    return await activePool.canonicalize(buffer);
+  } finally {
+    if (ownPool) await activePool.terminate();
+  }
+}
+
+export async function readCanonicalAudioInputAsync(input, pool = null) {
+  const audio = await readAudioInput(input);
+  return canonicalizeWavTo24BitLEAsync(audio, pool);
+}
+
 export function deriveCreatorId(publicKeyBytes) {
   return crypto.createHash("sha256").update(publicKeyBytes).digest().subarray(0, 4);
 }

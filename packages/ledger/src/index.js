@@ -1,7 +1,7 @@
-import { mkdir, readFile, appendFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { getCanonicalMetadataString, sha256Hex } from "../../core/src/index.js";
+import { createStorage } from "./storage.js";
 
 const DEFAULT_LEDGER_FILE = path.resolve(process.cwd(), "tmp/vri-ledger/events.jsonl");
 const DEFAULT_BATCH_FILE = path.resolve(process.cwd(), "tmp/vri-ledger/batches.jsonl");
@@ -46,19 +46,6 @@ function canonicalizeValue(value) {
 
 function canonicalizeRecord(record) {
   return canonicalizeValue(record);
-}
-
-async function readJsonl(filePath) {
-  try {
-    const content = await readFile(filePath, "utf8");
-    return content.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return [];
-    }
-
-    throw error;
-  }
 }
 
 function buildAnchorHash(previousAnchor, record) {
@@ -278,23 +265,45 @@ export function createUsageEvent(proofPackage, context = {}) {
 
 export class FileLedger {
   constructor(options = {}) {
-    this.filePath = options.filePath ?? DEFAULT_LEDGER_FILE;
-    this.batchFilePath = options.batchFilePath ?? DEFAULT_BATCH_FILE;
     this.batchSize = options.batchSize ?? 10;
     this.anchorPublisher = options.anchorPublisher ?? createHttpAnchorPublisher();
+    
+    // Initialize event storage
+    this.eventStorage = options.eventStorage || createStorage({
+      backend: options.storageBackend || "jsonl",
+      filePath: options.filePath ?? DEFAULT_LEDGER_FILE,
+      idField: options.eventIdField ?? "event_id",
+      tableName: options.eventTableName ?? "vri_events",
+      collectionName: options.eventCollectionName ?? "vri_events",
+      pool: options.postgresPool,
+      client: options.mongoClient,
+      db: options.mongoDb
+    });
+    
+    // Initialize batch storage
+    this.batchStorage = options.batchStorage || createStorage({
+      backend: options.batchStorageBackend || options.storageBackend || "jsonl",
+      filePath: options.batchFilePath ?? DEFAULT_BATCH_FILE,
+      idField: options.batchIdField ?? "batch_id",
+      tableName: options.batchTableName ?? "vri_batches",
+      collectionName: options.batchCollectionName ?? "vri_batches",
+      pool: options.postgresPool,
+      client: options.mongoClient,
+      db: options.mongoDb
+    });
   }
 
   async ensureStorage() {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await mkdir(path.dirname(this.batchFilePath), { recursive: true });
+    await this.eventStorage.initialize();
+    await this.batchStorage.initialize();
   }
 
   async listEvents() {
-    return readJsonl(this.filePath);
+    return this.eventStorage.getAll();
   }
 
   async listBatches() {
-    return readJsonl(this.batchFilePath);
+    return this.batchStorage.getAll();
   }
 
   async getLatestRecord() {
@@ -309,8 +318,7 @@ export class FileLedger {
 
   async rewriteEvents(events) {
     await this.ensureStorage();
-    const content = events.map((event) => JSON.stringify(event)).join("\n");
-    await writeFile(this.filePath, content ? `${content}\n` : "", "utf8");
+    await this.eventStorage.replaceAll(events);
   }
 
   async appendUsageEvent(proofPackage, context = {}) {
@@ -337,7 +345,7 @@ export class FileLedger {
       recorded_at: Math.floor(Date.now() / 1000)
     };
 
-    await appendFile(this.filePath, `${JSON.stringify(record)}\n`, "utf8");
+    await this.eventStorage.append(record);
 
     const shouldAnchorNow = context.anchorNow ?? (sequence % this.batchSize === 0);
 
@@ -397,7 +405,7 @@ export class FileLedger {
     });
 
     await this.rewriteEvents(updatedEvents);
-    await appendFile(this.batchFilePath, `${JSON.stringify(batch)}\n`, "utf8");
+    await this.batchStorage.append(batch);
 
     return batch;
   }
@@ -414,8 +422,7 @@ export class FileLedger {
 
   async rewriteBatches(batches) {
     await this.ensureStorage();
-    const content = batches.map((batch) => JSON.stringify(batch)).join("\n");
-    await writeFile(this.batchFilePath, content ? `${content}\n` : "", "utf8");
+    await this.batchStorage.replaceAll(batches);
   }
 
   async publishBatchAnchor(batchId, context = {}) {

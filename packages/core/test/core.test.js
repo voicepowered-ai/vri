@@ -8,6 +8,8 @@ import {
   registerVoice,
   verifyProofPackage
 } from "../src/index.js";
+import { canonicalizeWavTo24BitLEAsync } from "../src/index.js";
+import { createDspPool } from "../src/dsp-pool.js";
 import {
   KeyManager,
   createKeyManager,
@@ -331,4 +333,52 @@ test("createKmsKeyManager wraps a valid provider and delegates calls", () => {
     type: "spki"
   });
   assert.ok(crypto.verify(null, digest, publicKey, sig));
+});
+
+// ── Worker Thread DSP ─────────────────────────────────────────────────────────
+
+test("canonicalizeWavTo24BitLEAsync produces same result as sync version", async () => {
+  const wav = createPcmWav({ sampleRate: 48000, channels: 1, bitsPerSample: 16, samples: [100, 200, -100, -200] });
+  const sync = canonicalizeWavTo24BitLE(wav);
+  const async_ = await canonicalizeWavTo24BitLEAsync(wav);
+  assert.deepEqual(sync, async_);
+});
+
+test("canonicalizeWavTo24BitLEAsync resamples 44.1 kHz deterministically via Worker Thread", async () => {
+  const wav44 = createPcmWav({ sampleRate: 44100, channels: 1, bitsPerSample: 16, samples: [1000, 2000, 3000, 4000] });
+  const sync = canonicalizeWavTo24BitLE(wav44);
+  const async_ = await canonicalizeWavTo24BitLEAsync(wav44);
+  assert.deepEqual(sync, async_);
+});
+
+test("DspPool canonicalizes multiple buffers concurrently and deterministically", async () => {
+  const pool = createDspPool({ size: 2 });
+  try {
+    const wav = createPcmWav({ sampleRate: 48000, channels: 1, bitsPerSample: 16, samples: [500, 1000, -500, -1000] });
+    const sync = canonicalizeWavTo24BitLE(wav);
+
+    const results = await Promise.all([
+      pool.canonicalize(wav),
+      pool.canonicalize(wav),
+      pool.canonicalize(wav)
+    ]);
+
+    for (const result of results) {
+      assert.deepEqual(result, sync);
+    }
+  } finally {
+    await pool.terminate();
+  }
+});
+
+test("DspPool rejects invalid WAV buffers with a clear error", async () => {
+  const pool = createDspPool({ size: 1 });
+  try {
+    await assert.rejects(
+      () => pool.canonicalize(Buffer.from("not a wav")),
+      /WAV|RIFF/
+    );
+  } finally {
+    await pool.terminate();
+  }
 });

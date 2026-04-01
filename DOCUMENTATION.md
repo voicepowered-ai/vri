@@ -60,10 +60,10 @@ These files provide reproducible verification of the documentation release itsel
 
 - Protocol: ✅ defined.
 - Documentation signing bundle: ✅ implemented.
-- Reference implementation of watermarking: ⚠️ partial and non-normative.
-- Reference implementation of verification services: ⚠️ partial and non-normative.
-- SDKs: ❌ not implemented in this repository.
-- Deployment integrations: ❌ not implemented.
+- Reference implementation of watermarking: ✅ implemented in the Node reference packages (non-normative).
+- Reference implementation of verification services: ✅ implemented in the local Node API (non-normative).
+- SDKs: ⚠️ partial (CLI and package modules available; standalone multi-language SDKs are not included).
+- Deployment integrations: ⚠️ partial (local and pluggable storage backends plus external anchor publication are implemented; production cloud deployment blueprints are still in progress).
 
 ## Reading Order
 

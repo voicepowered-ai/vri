@@ -8,6 +8,6 @@
     "dev:api": "node packages/api/src/server.js",
     "cli:verify": "node packages/cli/src/index.js verify examples/test/audio.wav examples/test/proof.json",
     "cli:register": "node packages/cli/src/index.js register examples/test/audio.wav",
-    "test": "node --test packages/core/test/*.test.js packages/api/test/*.test.js"
+    "test": "node --test packages/core/test/*.test.js packages/ledger/test/*.test.js packages/api/test/*.test.js"
   }
 }
