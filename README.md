@@ -14,6 +14,22 @@ Protocol for verifiable audio generation and independent proof verification.
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
 
+## Quick Navigation
+
+- [1) What VRI Actually Is](#1-what-vri-actually-is)
+- [2) The Problem](#2-the-problem)
+- [3) The Solution](#3-the-solution)
+- [4) How It Works (Real Flow)](#4-how-it-works-real-flow)
+- [5) Core Concepts](#5-core-concepts)
+- [6) Verification Model](#6-verification-model)
+- [7) Security and Formal Assurance](#7-security-and-formal-assurance)
+- [8) Architecture](#8-architecture)
+- [9) What This Repo Contains](#9-what-this-repo-contains)
+- [10) What Is Not Included](#10-what-is-not-included)
+- [11) Demo (Input -> Audio -> Proof -> Verify VALID)](#11-demo-input---audio---proof---verify-valid)
+- [12) Roadmap](#12-roadmap)
+- [13) Additional Docs](#13-additional-docs)
+
 ## 1) What VRI Actually Is
 
 VRI is a protocol for generating and verifying cryptographic proofs for audio produced by AI systems.
@@ -79,7 +95,7 @@ Ed25519 signature over the protocol message digest derived from canonical metada
 
 Canonical JSON document containing verification material (hash, signature, metadata, key references, and protocol fields).
 
-## 6) Verification
+## 6) Verification Model
 
 Verification is deterministic and reproducible:
 
@@ -93,7 +109,9 @@ When Level 3 ledger claims are present, verifiers additionally validate the refe
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
 
-### Verification Security Hardening (Implemented)
+## 7) Security and Formal Assurance
+
+### 7.1 Verification Security Hardening (Implemented)
 
 The reference verifier is now fail-closed for critical proof fields.
 
@@ -118,7 +136,25 @@ Operational hardening included in the API and anchoring boundary:
 - External request timeout and response-size caps.
 - Optional freshness and nonce replay checks for verification policy.
 
-## 7) Architecture
+### 7.2 Formal Assurance Scope
+
+A production-hardened implementation is not the same as a formally complete protocol proof.
+
+For formal completeness, VRI tracks three explicit deliverables:
+
+- Explicit threat model: attacker classes, trust boundaries, and assumptions.
+- Formal properties: soundness and completeness statements for verification outcomes.
+- Formal methods artifact: proof sketch, mechanized verification, or equivalent model checking.
+
+Current status:
+
+- Implementation hardening: implemented.
+- Normative protocol specification: implemented.
+- Formal threat model and property proofs: planned work.
+
+This distinction is intentional: VRI currently provides deterministic, reproducible verification behavior, while formal proofs remain a dedicated milestone.
+
+## 8) Architecture
 
 ### Inference Runtime (Not in this repo)
 
@@ -132,7 +168,7 @@ Node.js reference implementation for canonicalization, proof generation/validati
 
 Append-only event and batch anchoring utilities for auditability. Useful for operations, not required for cryptographic proof verification itself.
 
-## 8) What This Repo Contains
+## 9) What This Repo Contains
 
 - Protocol specification and companion docs
 - Node.js reference verifier and core cryptographic flow
@@ -151,7 +187,7 @@ Key files and directories:
 - [examples](examples)
 - [fixtures](fixtures)
 
-## 9) What Is Not Included
+## 10) What Is Not Included
 
 - No full inference engine or TTS runtime
 - No production monetization platform
@@ -159,7 +195,7 @@ Key files and directories:
 
 The repository focuses on verifiable proof mechanics, reference verification, and protocol interoperability.
 
-## 10) Demo (Input -> Audio -> Proof -> Verify VALID)
+## 11) Demo (Input -> Audio -> Proof -> Verify VALID)
 
 ### Local verifier against fixture
 
@@ -199,7 +235,7 @@ node packages/cli/src/index.js verify examples/test/audio.wav examples/test/proo
 npm test
 ```
 
-## 11) Roadmap
+## 12) Roadmap
 
 ### Current Priority
 
@@ -244,10 +280,13 @@ npm test
 - [ ] Service endpoints for proof-package signing and verification with key rotation
 - [ ] Reference dashboards for licensing and monetization flows
 - [ ] Wallet-bound claims and programmable access control
+- [ ] Publish explicit protocol threat model and adversary assumptions
+- [ ] Specify soundness/completeness properties for verifier outcomes
+- [ ] Add formal verification artifact (proof sketch/model checking/mechanized subset)
 
 Live implementation checklist: [docs/tasks.md](docs/tasks.md)
 
-## 12) Additional Docs
+## 13) Additional Docs
 
 - [DOCUMENTATION.md](DOCUMENTATION.md)
 - [docs/system-overview.md](docs/system-overview.md)

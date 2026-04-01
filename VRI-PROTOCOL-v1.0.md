@@ -124,6 +124,9 @@ Implementations MUST apply the following numeric rules:
 - Quantization to signed 24-bit PCM MUST use round-to-nearest with ties away from zero.
 - The representable integer range is `[-8388608, 8388607]`.
 - The serialized 24-bit little-endian representation MUST use two's-complement encoding.
+- NaN and positive/negative infinity input samples MUST be rejected.
+- Subnormal floating-point samples MUST be treated as finite numeric values and MUST NOT be silently rewritten as NaN.
+- Implementations MUST publish deterministic test vectors for quantization edge cases.
 
 ### 4.5 Canonical Audio Hash
 
@@ -318,17 +321,19 @@ A verifier performing cryptographic verification MUST have:
 
 1. A verifier receives audio and a Proof Package.
 2. The verifier MUST parse `protocol_version` and reject unsupported major versions.
-3. The verifier MUST validate the syntactic structure of all required Proof Package fields.
-4. The verifier MUST decode `watermark_payload` into its raw 8-byte form.
-5. The verifier MUST attempt watermark extraction when audio evidence is present.
-6. If watermark extraction succeeds, the verifier MUST compare the extracted payload to the Proof Package `watermark_payload`.
-7. The verifier MUST reconstruct `canonical_metadata` exactly as defined in Section 9.2.
-8. The verifier MUST reconstruct the deterministic message digest exactly as defined in Section 9.3.
-9. The verifier MUST validate the Ed25519 signature using the supplied public key.
-10. If ledger evidence is claimed or required by the compliance level, the verifier MUST validate corresponding ledger state.
-11. If watermark extraction fails or is inconclusive, the verifier MAY invoke the Forensic Detection Layer.
-12. The verifier MUST distinguish cryptographic verification from forensic detection in outputs.
-13. The verifier MUST NOT report forensic detection results as equivalent to cryptographic proof.
+3. The verifier MUST reject Proof Packages where `protocol_version` is absent.
+4. The verifier MUST validate the syntactic structure of all required Proof Package fields.
+5. The verifier MUST decode `watermark_payload` into its raw 8-byte form.
+6. The verifier MUST attempt watermark extraction when audio evidence is present.
+7. If watermark extraction succeeds, the verifier MUST compare the extracted payload to the Proof Package `watermark_payload`.
+8. The verifier MUST reconstruct `canonical_metadata` exactly as defined in Section 9.2.
+9. The verifier MUST reconstruct the deterministic message digest exactly as defined in Section 9.3.
+10. The verifier MUST validate the Ed25519 signature using the supplied public key.
+11. The verifier MUST verify `creator_id` by deterministically deriving it from `public_key` as defined in Section 9.1.
+12. If ledger evidence is claimed or required by the compliance level, the verifier MUST validate corresponding ledger state.
+13. If watermark extraction fails or is inconclusive, the verifier MAY invoke the Forensic Detection Layer.
+14. The verifier MUST distinguish cryptographic verification from forensic detection in outputs.
+15. The verifier MUST NOT report forensic detection results as equivalent to cryptographic proof.
 
 ### 8.4 Verification Outcomes
 
@@ -340,6 +345,12 @@ A verifier SHOULD classify outcomes into at least the following categories:
 - `watermark_not_found`: no recoverable watermark evidence found and no cryptographic conclusion about the presented audio can be made from signal evidence.
 - `forensic_match_only`: no cryptographic proof, but acoustic similarity detected.
 - `unverified`: insufficient or invalid evidence.
+
+Implementations exposing structured trust signals MUST apply deterministic decision rules:
+
+- `trust_level` MUST be `LOW` if any of `protocol_valid`, `identity_valid`, `metadata_consistent`, or `cryptographic_valid` is false.
+- `trust_level` MUST be `HIGH` only if all prior fields are true and watermark state is `present`.
+- `trust_level` MUST be `PARTIAL` only if all prior fields are true and watermark state is `missing`, `degraded`, or `not_applicable`.
 
 ### 8.5 Ledger Validation
 
@@ -430,6 +441,7 @@ The signed message for VRI Protocol v1.0 is defined exactly as:
 
 ```text
 message = SHA-256(
+  context_prefix ||
   watermark_payload ||
   audio_hash ||
   timestamp ||
@@ -438,6 +450,8 @@ message = SHA-256(
 ```
 
 For avoidance of ambiguity, the concatenated byte sequence MUST be constructed exactly as follows:
+
+- `context_prefix`: the UTF-8 byte string `VRI-SIG-V1\0`.
 
 - `watermark_payload`: the raw 8-byte payload defined in Section 9.1.
 - `audio_hash`: the raw 32-byte SHA-256 digest defined in Section 4.5.
@@ -498,6 +512,13 @@ The Proof Package:
 - MUST contain or reference the corresponding Usage Event for Level 3 compliance.
 - SHOULD contain sufficient information to validate ledger anchoring where available.
 - MAY contain auxiliary verification hints or policy information.
+
+Anti-ambiguity rules:
+
+- If both `watermark_payload` and `watermark_hex` are present, they MUST decode to identical 8-byte values; otherwise the Proof Package MUST be rejected.
+- If both `metadata` and `canonical_metadata` are present, `canonical_metadata` MUST equal the deterministic canonical serialization of `metadata`; otherwise the Proof Package MUST be rejected.
+- Implementations MUST reject duplicate member names in Proof Package JSON.
+- Implementations MUST reject conflicting critical-field aliases.
 
 Encoding rules:
 
@@ -730,8 +751,148 @@ When external generation APIs are used:
 - raw provider output MUST be treated as internal until protocol completion,
 - proof generation MUST occur under the control of the conforming VRI implementation.
 
+### 15.5 Replay and Freshness Policy
+
+VRI cryptographic validity does not, by itself, imply freshness.
+
+- Verifiers SHOULD implement a configurable timestamp freshness window.
+- Verifiers MAY implement nonce replay tracking scoped by `creator_id`.
+- Implementations MUST document replay policy mode in conformance statements.
+- If replay policy is enabled and violated, the verifier MUST return an explicit replay/freshness failure outcome.
+
+### 15.6 Interoperability Test Vectors
+
+Conforming implementations MUST validate against a published interoperability corpus.
+
+- The corpus MUST include positive vectors for canonicalization, message construction, signature verification, and ledger-reference validation.
+- The corpus MUST include negative vectors for malformed proofs, conflicting fields, unsupported versions, and metadata canonicalization mismatches.
+- An implementation claiming conformance MUST publish the corpus version used for validation.
+
 ## 16. Conclusion
 
 VRI Protocol v1.0 defines a generation-layer protocol for proof-carrying AI voice artifacts. It combines watermark evidence, deterministic cryptographic signatures, and externally anchored usage records into a single verification model implementable across internal models, external APIs, and open-source runtimes.
 
 The protocol does not eliminate cloning, forgery attempts, or disputes. It makes them more tractable by attaching verifiable provenance at synthesis time, preserving time integrity through immutable records, and enabling independent verification across multiple layers. If audio is generated through VRI, its origin can be verified. If it is not, its legitimacy is uncertain.
+
+## 17. Formal Security Model
+
+### 17.1 Threat Model
+
+VRI is evaluated under a Dolev-Yao-style network adversary extended with media-transformation capabilities.
+
+Attacker capabilities:
+
+1. The attacker MAY read, block, delay, replay, reorder, and inject transport messages.
+2. The attacker MAY submit arbitrary audio artifacts and arbitrary proof objects to verifiers.
+3. The attacker MAY perform audio transformations including transcoding, resampling, denoising, filtering, clipping, concatenation, re-recording, and model-based re-synthesis.
+4. The attacker MAY run independent generation and voice-conversion systems.
+5. The attacker MAY attempt field-confusion attacks using conflicting encodings of critical values.
+6. The attacker is assumed unable to forge Ed25519 signatures without private-key compromise.
+7. The attacker is assumed unable to find practical SHA-256 second-preimage or collision attacks for protocol forgery.
+
+Trust assumptions:
+
+1. Signing private keys are confidential and used only by authorized signing services.
+2. Canonicalization and deterministic serialization are implemented exactly as specified.
+3. Verifiers enforce fail-closed parsing and reject ambiguous/conflicting critical fields.
+4. Freshness/replay policy is applied exactly as declared by the verifier profile.
+
+System boundaries:
+
+1. Inference boundary: watermark insertion, canonicalization, hashing, and signing occur before externally visible output.
+2. Verification boundary: cryptographic validity is computed from explicit inputs and deterministic algorithms.
+3. Ledger boundary: ledger contributes ordering/time evidence and MUST NOT replace cryptographic artifact validation.
+4. Key boundary: authenticity guarantees are contingent on key custody and lifecycle integrity.
+
+### 17.2 Formal Security Properties
+
+Let:
+
+1. `A` be presented audio bytes.
+2. `C(A)` be canonical audio transform.
+3. `h = SHA-256(C(A))`.
+4. `w` be 8-byte watermark payload.
+5. `m` be canonical metadata bytes.
+6. `t` be timestamp.
+7. `(pk, sk)` be Ed25519 keypair.
+8. `cid = f(pk)` be deterministic creator derivation.
+9. `d = H_msg(w,h,t,m)` be deterministic message digest as defined in Section 9.3.
+10. `sig = Sign_sk(d)` be Ed25519 signature.
+
+Authenticity:
+
+1. If verifier outputs `cryptographic_valid = true`, then `Verify_pk(d,sig) = true`.
+
+Integrity:
+
+1. Any modification to bound tuple `(w,h,t,m)` invalidates signature verification except with negligible probability.
+
+Identity binding:
+
+1. Accepted identity requires `creator_id = f(public_key)`.
+
+Metadata consistency:
+
+1. If both `metadata` and `canonical_metadata` are present, they MUST encode the same canonical value.
+
+Determinism:
+
+1. For fixed `(audio, proof_package, verifier_policy)`, verifier outputs are deterministic.
+
+Non-ambiguity:
+
+1. Conflicting duplicate encodings of critical fields are rejected.
+
+Soundness target:
+
+1. `P(accept invalid proof) <= eps_sig + eps_hash + eps_impl`, where cryptographic terms are negligible and `eps_impl` captures implementation defects.
+
+Completeness target:
+
+1. A conformant verifier SHOULD accept conformant proofs under matching policy profile and supported protocol version.
+
+Non-repudiation scope:
+
+1. A valid signature proves action by the holder of `sk`; it does not, by itself, prove legal or human identity.
+
+Replay resistance scope:
+
+1. Replay resistance is profile-dependent unless freshness/nonce checks are mandatory in the selected profile.
+
+### 17.3 Verification Correctness Invariants
+
+The following invariants MUST hold for successful verification:
+
+1. `protocol_version` is present and supported.
+2. `audio_hash` equals recomputed `SHA-256(C(A))`.
+3. `creator_id` equals deterministic derivation from `public_key`.
+4. Signature verifies over exact deterministic message construction.
+5. `canonical_metadata` is deterministic and valid under Section 9.2.
+6. If both metadata forms are present, they are equivalent.
+7. If both watermark encodings are present, they decode to identical 8-byte payloads.
+8. Critical-field ambiguity (duplicate names, conflicting aliases, contradictory representations) is rejected.
+9. Ledger evidence MUST NOT upgrade an otherwise cryptographically invalid artifact.
+10. `trust_level` output is deterministic from verification signals.
+
+### 17.4 MUST-Level Protocol Guarantees
+
+1. Verifiers MUST fail closed when any critical invariant fails.
+2. Verifiers MUST reject absent or unsupported `protocol_version` in strict verification mode.
+3. Verifiers MUST enforce `creator_id = f(public_key)`.
+4. Verifiers MUST reject conflicting `watermark_payload` and `watermark_hex` values.
+5. Verifiers MUST reject `metadata` and `canonical_metadata` mismatches.
+6. Verifiers MUST validate signatures over exact canonical bytes and message ordering defined in Section 9.3.
+7. Verifiers MUST compute `audio_hash` over canonicalized audio only.
+8. If replay policy is enabled, verifiers MUST enforce configured freshness/nonce constraints and return explicit replay/freshness failure outcomes.
+9. Structured trust outputs MUST follow deterministic mapping rules from `protocol_valid`, `identity_valid`, `metadata_consistent`, `cryptographic_valid`, and watermark state.
+10. Ledger validation MUST remain auxiliary to, and never a substitute for, cryptographic verification.
+
+### 17.5 Current Gaps to Full Formal Assurance
+
+The following gaps remain before full mechanized proof claims:
+
+1. Replay/freshness is profile-configurable rather than globally mandatory across all conformance modes.
+2. Non-repudiation remains conditional on external key lifecycle governance (rotation, revocation, compromise publication).
+3. Watermark recovery is probabilistic under adversarial transforms and cannot be promoted to a universal invariant.
+4. Full parser/canonicalization edge-case determinism still requires broader mandatory conformance vectors (Unicode, malformed containers, numeric corner cases).
+5. A machine-checked semantics artifact is not yet part of baseline conformance.
