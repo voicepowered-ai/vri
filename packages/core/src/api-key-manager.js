@@ -3,6 +3,8 @@
  * Manages API keys, organizations, and access control
  */
 
+import crypto from 'node:crypto';
+
 export const ROLES = {
   ADMIN: 'admin',
   USER: 'user',
@@ -34,7 +36,7 @@ export class ApiKeyManager {
     }
 
     const apiKey = this.#generateKey();
-    const id = `key_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const id = `key_${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
 
     this.#keys.set(apiKey, {
@@ -92,7 +94,7 @@ export class ApiKeyManager {
    * @returns {object} { id, name, createdAt, quotaPerHour }
    */
   createOrganization(name, quotaPerHour = 100) {
-    const orgId = `org_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const orgId = `org_${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
 
     this.#orgs.set(orgId, {
@@ -170,7 +172,7 @@ export class ApiKeyManager {
   }
 
   #generateKey() {
-    const randomPart = Math.random().toString(36).substr(2, 32);
+    const randomPart = crypto.randomBytes(24).toString('base64url');
     const timestampPart = Date.now().toString(36);
     return `vri_${timestampPart}_${randomPart}`;
   }

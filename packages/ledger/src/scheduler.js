@@ -3,6 +3,8 @@
  * Manages async publication to external anchors with exponential backoff
  */
 
+import crypto from 'node:crypto';
+
 export const SCHEDULER_STATES = {
   PENDING: 'pending',
   PUBLISHING: 'publishing',
@@ -18,6 +20,11 @@ export const RETRY_CONFIG = {
   backoffMultiplier: 2,
   jitterFactor: 0.1
 };
+
+function secureJitterUnit() {
+  const r = crypto.randomInt(0, 1_000_000) / 999_999;
+  return (r * 2) - 1;
+}
 
 export class BatchScheduler {
   #queue = [];
@@ -208,7 +215,7 @@ export class BatchScheduler {
       this.#config.maxDelayMs
     );
 
-    const jitter = baseDelay * this.#config.jitterFactor * (Math.random() * 2 - 1);
+    const jitter = baseDelay * this.#config.jitterFactor * secureJitterUnit();
     return Math.max(0, baseDelay + jitter);
   }
 

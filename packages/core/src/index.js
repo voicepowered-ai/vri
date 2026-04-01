@@ -46,6 +46,56 @@ export function decodeHex(value, label) {
   return Buffer.from(value.slice(2), "hex");
 }
 
+function decodeProofBytes(value, label, expectedLength = null) {
+  if (Buffer.isBuffer(value)) {
+    if (expectedLength != null && value.length !== expectedLength) {
+      throw new TypeError(`${label} must be ${expectedLength} bytes.`);
+    }
+    return value;
+  }
+
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError(`${label} must be a non-empty string.`);
+  }
+
+  let decoded;
+
+  if (/^0x[0-9a-f]+$/i.test(value)) {
+    decoded = Buffer.from(value.slice(2), "hex");
+  } else {
+    decoded = Buffer.from(value, "base64");
+  }
+
+  if (expectedLength != null && decoded.length !== expectedLength) {
+    throw new TypeError(`${label} must be ${expectedLength} bytes.`);
+  }
+
+  return decoded;
+}
+
+class NonceReplayTracker {
+  constructor() {
+    this.map = new Map();
+  }
+
+  has(creatorIdHex, nonce) {
+    const set = this.map.get(creatorIdHex);
+    return Boolean(set && set.has(nonce));
+  }
+
+  add(creatorIdHex, nonce) {
+    if (!this.map.has(creatorIdHex)) {
+      this.map.set(creatorIdHex, new Set());
+    }
+
+    this.map.get(creatorIdHex).add(nonce);
+  }
+}
+
+export function createNonceReplayTracker() {
+  return new NonceReplayTracker();
+}
+
 export function canonicalizeJsonValue(value) {
   if (value === null) {
     return "null";
@@ -484,75 +534,217 @@ export async function verifyVoice(voiceId, options = {}) {
   };
 }
 
-export function verifyProofPackage(audioBuffer, proofPackage) {
-  const canonicalAudio = getCanonicalAudioBytes(audioBuffer);
-  const computedAudioHash = crypto.createHash("sha256").update(canonicalAudio).digest();
-  const expectedAudioHash = decodeHex(proofPackage.audio_hash, "audio_hash");
-  const canonicalMetadata = typeof proofPackage.canonical_metadata === "string"
-    ? proofPackage.canonical_metadata
-    : getCanonicalMetadataString(proofPackage.metadata ?? {});
-  const publicKey = crypto.createPublicKey({
-    key: Buffer.concat([SPKI_PREFIX_ED25519, decodeHex(proofPackage.public_key, "public_key")]),
-    format: "der",
-    type: "spki"
-  });
-  const signatureValue = typeof proofPackage.signature === "object"
-    ? proofPackage.signature.value
-    : proofPackage.signature;
-  const signature = decodeHex(signatureValue, "signature");
-  const watermarkPayload = decodeHex(proofPackage.watermark_hex ?? proofPackage.watermark_payload, "watermark payload");
+export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
+  const requireProtocolVersion = options.requireProtocolVersion ?? true;
+  const enforceFreshness = options.enforceFreshness ?? false;
+  const maxTimestampSkewSeconds = Number(options.maxTimestampSkewSeconds ?? 24 * 60 * 60);
+  const nowTimestamp = Number(options.nowTimestamp ?? Math.floor(Date.now() / 1000));
+  const nonceTracker = options.nonceTracker ?? null;
+  const watermarkStatus = options.watermarkStatus ?? "not_applicable";
 
-  if (computedAudioHash.equals(expectedAudioHash)) {
+  const fail = (reason, details = {}, checks = {}) => {
+    const protocolValid = checks.protocol_valid ?? false;
+    const metadataConsistent = checks.metadata_consistent ?? false;
+    const identityValid = checks.identity_valid ?? false;
+    const cryptographicValid = checks.cryptographic_valid ?? false;
+
+    return {
+      ok: false,
+      reason,
+      cryptographic_valid: cryptographicValid,
+      watermark: watermarkStatus,
+      identity_valid: identityValid,
+      metadata_consistent: metadataConsistent,
+      protocol_valid: protocolValid,
+      trust_level: "LOW",
+      details
+    };
+  };
+
+  if (!proofPackage || typeof proofPackage !== "object" || Array.isArray(proofPackage)) {
+    return fail("INVALID_PROOF_PACKAGE", { error: "proofPackage must be a JSON object." });
+  }
+
+  if (requireProtocolVersion) {
+    if (proofPackage.protocol_version !== "1.0") {
+      return fail("INVALID_PROTOCOL_VERSION", {
+        expected: "1.0",
+        received: proofPackage.protocol_version ?? null
+      });
+    }
+  }
+
+  try {
+    const canonicalAudio = getCanonicalAudioBytes(audioBuffer);
+    const computedAudioHash = crypto.createHash("sha256").update(canonicalAudio).digest();
+    const expectedAudioHash = decodeHex(proofPackage.audio_hash, "audio_hash");
+
+    const hasCanonicalMetadata = typeof proofPackage.canonical_metadata === "string";
+    const hasMetadataObject = proofPackage.metadata && typeof proofPackage.metadata === "object" && !Array.isArray(proofPackage.metadata);
+
+    let metadataConsistent = false;
+    let canonicalMetadata;
+
+    if (hasCanonicalMetadata && hasMetadataObject) {
+      const recomputed = getCanonicalMetadataString(proofPackage.metadata);
+      metadataConsistent = recomputed === proofPackage.canonical_metadata;
+      canonicalMetadata = proofPackage.canonical_metadata;
+    } else if (hasCanonicalMetadata) {
+      metadataConsistent = true;
+      canonicalMetadata = proofPackage.canonical_metadata;
+    } else if (hasMetadataObject) {
+      metadataConsistent = true;
+      canonicalMetadata = getCanonicalMetadataString(proofPackage.metadata);
+    } else {
+      return fail("INVALID_METADATA", {
+        error: "proof must include canonical_metadata and/or metadata object"
+      }, {
+        protocol_valid: true
+      });
+    }
+
+    if (!metadataConsistent) {
+      return fail("METADATA_MISMATCH", {
+        error: "canonical_metadata does not match metadata"
+      }, {
+        protocol_valid: true,
+        metadata_consistent: false
+      });
+    }
+
+    const publicKeyBytes = decodeHex(proofPackage.public_key, "public_key");
+    const publicKey = crypto.createPublicKey({
+      key: Buffer.concat([SPKI_PREFIX_ED25519, publicKeyBytes]),
+      format: "der",
+      type: "spki"
+    });
+
+    const derivedCreatorIdHex = hex(deriveCreatorId(publicKeyBytes));
+    const claimedCreatorId = proofPackage.creator_id;
+    const identityValid = typeof claimedCreatorId === "string" && claimedCreatorId.toLowerCase() === derivedCreatorIdHex.toLowerCase();
+
+    if (!identityValid) {
+      return fail("CREATOR_ID_MISMATCH", {
+        expected_creator_id: derivedCreatorIdHex,
+        received_creator_id: claimedCreatorId ?? null
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: false
+      });
+    }
+
+    const signatureValue = typeof proofPackage.signature === "object"
+      ? proofPackage.signature.value
+      : proofPackage.signature;
+    const signature = decodeProofBytes(signatureValue, "signature", 64);
+
+    const watermarkHex = proofPackage.watermark_hex;
+    const watermarkPayloadField = proofPackage.watermark_payload;
+    let watermarkPayload;
+
+    if (typeof watermarkHex === "string" && typeof watermarkPayloadField === "string") {
+      const fromHex = decodeProofBytes(watermarkHex, "watermark_hex", 8);
+      const fromPayload = decodeProofBytes(watermarkPayloadField, "watermark_payload", 8);
+
+      if (!fromHex.equals(fromPayload)) {
+        return fail("WATERMARK_FIELD_MISMATCH", {
+          error: "watermark_hex and watermark_payload conflict"
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true
+        });
+      }
+
+      watermarkPayload = fromHex;
+    } else {
+      watermarkPayload = decodeProofBytes(watermarkHex ?? watermarkPayloadField, "watermark_payload", 8);
+    }
+
+    const timestamp = Number(proofPackage.timestamp);
+
+    if (!Number.isInteger(timestamp) || timestamp < 0) {
+      return fail("INVALID_TIMESTAMP", {
+        error: "timestamp must be a non-negative integer"
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true
+      });
+    }
+
+    if (enforceFreshness) {
+      const skew = Math.abs(nowTimestamp - timestamp);
+      if (!Number.isFinite(skew) || skew > maxTimestampSkewSeconds) {
+        return fail("TIMESTAMP_OUT_OF_WINDOW", {
+          now: nowTimestamp,
+          timestamp,
+          max_skew_seconds: maxTimestampSkewSeconds
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true
+        });
+      }
+    }
+
+    if (nonceTracker) {
+      const nonce = watermarkPayload[7];
+      if (nonceTracker.has(derivedCreatorIdHex, nonce)) {
+        return fail("REPLAY_DETECTED", {
+          creator_id: derivedCreatorIdHex,
+          nonce
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true
+        });
+      }
+      nonceTracker.add(derivedCreatorIdHex, nonce);
+    }
+
+    if (!computedAudioHash.equals(expectedAudioHash)) {
+      return fail("HASH_MISMATCH", {
+        mode: "v1.0",
+        canonicalAudioHash: computedAudioHash.toString("hex"),
+        expectedAudioHash: expectedAudioHash.toString("hex")
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true
+      });
+    }
+
     const messageDigest = buildSignatureMessageDigest({
       watermarkPayload,
       audioHash: expectedAudioHash,
-      timestamp: proofPackage.timestamp,
+      timestamp,
       canonicalMetadata
     });
     const valid = crypto.verify(null, messageDigest, publicKey, signature);
+    const cryptographicValid = valid;
+    const trustLevel = cryptographicValid
+      ? (watermarkStatus === "present" ? "HIGH" : "PARTIAL")
+      : "LOW";
 
     return {
-      ok: valid,
-      reason: valid ? "VALID" : "INVALID_SIGNATURE",
+      ok: cryptographicValid,
+      reason: cryptographicValid ? "VALID" : "INVALID_SIGNATURE",
+      cryptographic_valid: cryptographicValid,
+      watermark: watermarkStatus,
+      identity_valid: true,
+      metadata_consistent: true,
+      protocol_valid: true,
+      trust_level: trustLevel,
       details: {
         mode: "v1.0",
         audioHash: computedAudioHash.toString("hex"),
-        messageDigest: messageDigest.toString("hex")
+        messageDigest: messageDigest.toString("hex"),
+        creator_id: derivedCreatorIdHex
       }
     };
+  } catch (error) {
+    return fail("INVALID_PROOF_PACKAGE", { error: error.message });
   }
-
-  const legacyAudioHash = crypto.createHash("sha256").update(readWavPcmData(audioBuffer)).digest();
-  const proofDeclaresLegacy = !("protocol_version" in proofPackage);
-
-  if (proofDeclaresLegacy && legacyAudioHash.equals(expectedAudioHash)) {
-    const messageDigest = buildLegacySignatureMessageDigest({
-      watermarkPayload,
-      audioHash: expectedAudioHash,
-      timestamp: proofPackage.timestamp,
-      canonicalMetadata
-    });
-    const valid = crypto.verify(null, messageDigest, publicKey, signature);
-
-    return {
-      ok: valid,
-      reason: valid ? "VALID" : "INVALID_SIGNATURE",
-      details: {
-        mode: "legacy-example",
-        audioHash: legacyAudioHash.toString("hex"),
-        messageDigest: messageDigest.toString("hex")
-      }
-    };
-  }
-
-  return {
-    ok: false,
-    reason: "HASH_MISMATCH",
-    details: {
-      mode: proofDeclaresLegacy ? "v1.0-or-legacy" : "v1.0",
-      canonicalAudioHash: computedAudioHash.toString("hex"),
-      legacyAudioHash: legacyAudioHash.toString("hex"),
-      expectedAudioHash: expectedAudioHash.toString("hex")
-    }
-  };
 }

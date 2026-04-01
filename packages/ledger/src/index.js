@@ -1,5 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
+import net from "node:net";
+import dns from "node:dns/promises";
 import { getCanonicalMetadataString, sha256Hex } from "../../core/src/index.js";
 import { createStorage } from "./storage.js";
 
@@ -160,8 +162,154 @@ function normalizeExternalAnchorResponse(payload, fallback = {}) {
   };
 }
 
+function isPrivateIPv4(ip) {
+  const parts = ip.split(".").map((value) => Number(value));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  return a === 10
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a === 127
+    || (a === 169 && b === 254);
+}
+
+function isPrivateIPv6(ip) {
+  const normalized = ip.toLowerCase();
+  return normalized === "::1"
+    || normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || normalized.startsWith("fe80:");
+}
+
+function isPrivateIp(ip) {
+  const family = net.isIP(ip);
+  if (family === 4) {
+    return isPrivateIPv4(ip);
+  }
+
+  if (family === 6) {
+    return isPrivateIPv6(ip);
+  }
+
+  return false;
+}
+
+async function resolveHostAddresses(hostname) {
+  const literal = net.isIP(hostname);
+  if (literal) {
+    return [hostname];
+  }
+
+  const records = await dns.lookup(hostname, { all: true });
+  return records.map((record) => record.address);
+}
+
+async function validateAnchorEndpoint(endpoint, policy) {
+  let parsed;
+
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new ExternalAnchorError("External anchor endpoint must be a valid URL.", {
+      code: "EXTERNAL_ANCHOR_INVALID_ENDPOINT"
+    });
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new ExternalAnchorError("External anchor endpoint must not include credentials.", {
+      code: "EXTERNAL_ANCHOR_INVALID_ENDPOINT"
+    });
+  }
+
+  const protocol = parsed.protocol.toLowerCase();
+  if (protocol !== "https:" && !(policy.allowInsecureHttp && protocol === "http:")) {
+    throw new ExternalAnchorError("External anchor endpoint must use HTTPS.", {
+      code: "EXTERNAL_ANCHOR_INVALID_ENDPOINT"
+    });
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const allowlist = Array.isArray(policy.allowlist)
+    ? policy.allowlist.map((entry) => String(entry).toLowerCase()).filter(Boolean)
+    : [];
+
+  if (allowlist.length > 0 && !allowlist.includes(hostname)) {
+    throw new ExternalAnchorError("External anchor host is not in the allowlist.", {
+      code: "EXTERNAL_ANCHOR_HOST_NOT_ALLOWED"
+    });
+  }
+
+  if (!policy.allowLocalhost && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) {
+    throw new ExternalAnchorError("External anchor localhost targets are not allowed.", {
+      code: "EXTERNAL_ANCHOR_PRIVATE_NETWORK_BLOCKED"
+    });
+  }
+
+  if (!policy.allowPrivateNetworks) {
+    const addresses = await resolveHostAddresses(parsed.hostname);
+    if (addresses.some((address) => isPrivateIp(address))) {
+      throw new ExternalAnchorError("External anchor private network targets are not allowed.", {
+        code: "EXTERNAL_ANCHOR_PRIVATE_NETWORK_BLOCKED"
+      });
+    }
+  }
+
+  return parsed.toString();
+}
+
+async function readJsonWithLimit(response, maxResponseBytes) {
+  const body = response.body;
+
+  if (!body || typeof body.getReader !== "function") {
+    return response.json();
+  }
+
+  const reader = body.getReader();
+  const chunks = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+
+    if (total > maxResponseBytes) {
+      throw new ExternalAnchorError("External anchor response exceeded maximum allowed size.", {
+        code: "EXTERNAL_ANCHOR_RESPONSE_TOO_LARGE"
+      });
+    }
+
+    chunks.push(chunk);
+  }
+
+  const raw = Buffer.concat(chunks).toString("utf8");
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ExternalAnchorError("External anchor response must be valid JSON.", {
+      code: "EXTERNAL_ANCHOR_INVALID_RESPONSE"
+    });
+  }
+}
+
 export function createHttpAnchorPublisher(options = {}) {
   const retries = Math.max(1, Number(options.retries ?? 2));
+  const policy = {
+    allowlist: options.allowlist ?? [],
+    allowPrivateNetworks: options.allowPrivateNetworks ?? false,
+    allowLocalhost: options.allowLocalhost ?? false,
+    allowInsecureHttp: options.allowInsecureHttp ?? false,
+    timeoutMs: Math.max(100, Number(options.timeoutMs ?? 5000)),
+    maxResponseBytes: Math.max(1024, Number(options.maxResponseBytes ?? 64 * 1024))
+  };
 
   return {
     async publish(request) {
@@ -173,28 +321,38 @@ export function createHttpAnchorPublisher(options = {}) {
         });
       }
 
+      const validatedEndpoint = await validateAnchorEndpoint(endpoint, policy);
       let lastError;
 
       for (let attempt = 1; attempt <= retries; attempt += 1) {
         try {
-          const response = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json"
-            },
-            body: JSON.stringify({
-              provider: request.provider,
-              network: request.network,
-              batchId: request.batch.batch_id,
-              rootHash: request.batch.root_hash,
-              batchAnchor: request.batch.batch_anchor,
-              previousBatchAnchor: request.batch.previous_batch_anchor,
-              eventCount: request.batch.event_count,
-              eventIds: request.batch.event_ids
-            })
-          });
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), policy.timeoutMs);
+          let response;
 
-          const payload = await response.json();
+          try {
+            response = await fetch(validatedEndpoint, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json"
+              },
+              signal: controller.signal,
+              body: JSON.stringify({
+                provider: request.provider,
+                network: request.network,
+                batchId: request.batch.batch_id,
+                rootHash: request.batch.root_hash,
+                batchAnchor: request.batch.batch_anchor,
+                previousBatchAnchor: request.batch.previous_batch_anchor,
+                eventCount: request.batch.event_count,
+                eventIds: request.batch.event_ids
+              })
+            });
+          } finally {
+            clearTimeout(timeout);
+          }
+
+          const payload = await readJsonWithLimit(response, policy.maxResponseBytes);
 
           if (!response.ok) {
             throw new ExternalAnchorError(
@@ -208,7 +366,13 @@ export function createHttpAnchorPublisher(options = {}) {
             network: request.network
           });
         } catch (error) {
-          lastError = error;
+          if (error?.name === "AbortError") {
+            lastError = new ExternalAnchorError("External anchor request timed out.", {
+              code: "EXTERNAL_ANCHOR_TIMEOUT"
+            });
+          } else {
+            lastError = error;
+          }
 
           if (attempt >= retries) {
             break;
@@ -266,7 +430,7 @@ export function createUsageEvent(proofPackage, context = {}) {
 export class FileLedger {
   constructor(options = {}) {
     this.batchSize = options.batchSize ?? 10;
-    this.anchorPublisher = options.anchorPublisher ?? createHttpAnchorPublisher();
+    this.anchorPublisher = options.anchorPublisher ?? createHttpAnchorPublisher(options.anchorPolicy);
     
     // Initialize event storage
     this.eventStorage = options.eventStorage || createStorage({

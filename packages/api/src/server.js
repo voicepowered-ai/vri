@@ -1,5 +1,10 @@
 import http from "node:http";
-import { registerVoice, verifyVoice, verifyProofPackage } from "../../core/src/index.js";
+import {
+  registerVoice,
+  verifyVoice,
+  verifyProofPackage,
+  createNonceReplayTracker
+} from "../../core/src/index.js";
 import { createKeyManager } from "../../core/src/key-manager.js";
 import { createAuditLog, EVENT_TYPES } from "../../core/src/audit-log.js";
 import { createLedger, ExternalAnchorError } from "../../ledger/src/index.js";
@@ -13,10 +18,17 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload, null, 2));
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = 8 * 1024 * 1024) {
   const chunks = [];
+  let total = 0;
 
   for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const error = new Error("Request body too large");
+      error.code = "REQUEST_TOO_LARGE";
+      throw error;
+    }
     chunks.push(chunk);
   }
 
@@ -24,7 +36,13 @@ async function readJson(request) {
     return {};
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    const error = new Error("Invalid JSON payload");
+    error.code = "INVALID_JSON";
+    throw error;
+  }
 }
 
 function isJsonObject(value) {
@@ -48,6 +66,13 @@ function mapBatchPublication(batch) {
 }
 
 export function createServer(options = {}) {
+  const maxRequestBytes = Math.max(1024, Number(options.maxRequestBytes ?? 8 * 1024 * 1024));
+  const maxAudioBytes = Math.max(1024, Number(options.maxAudioBytes ?? 8 * 1024 * 1024));
+  const verifySecurity = {
+    enforceFreshness: options.verifyEnforceFreshness ?? true,
+    maxTimestampSkewSeconds: Number(options.verifyMaxTimestampSkewSeconds ?? 24 * 60 * 60),
+    trackNonce: options.verifyTrackNonce ?? false
+  };
   const watermarkEngine = options.watermarkEngine ?? createWatermarkEngine();
   const ledger = options.ledger ?? createLedger({
     filePath: options.ledgerFilePath,
@@ -61,13 +86,23 @@ export function createServer(options = {}) {
     eventCollectionName: options.eventCollectionName,
     batchCollectionName: options.batchCollectionName,
     eventTableName: options.eventTableName,
-    batchTableName: options.batchTableName
+    batchTableName: options.batchTableName,
+    anchorPolicy: {
+      allowlist: options.externalAnchorAllowlist ?? [],
+      allowPrivateNetworks: options.externalAnchorAllowPrivateNetworks ?? false,
+      allowLocalhost: options.externalAnchorAllowLocalhost ?? false,
+      allowInsecureHttp: options.externalAnchorAllowInsecureHttp ?? false,
+      timeoutMs: options.externalAnchorTimeoutMs,
+      maxResponseBytes: options.externalAnchorMaxResponseBytes
+    }
   });
   const keyManager = options.keyManager ?? createKeyManager();
   const auditLog = options.auditLog ?? createAuditLog({ backend: options.auditLogBackend || "memory" });
   const apiKeyManager = options.apiKeyManager ?? createApiKeyManager();
   const perfProfiler = options.perfProfiler ?? createPerfProfiler();
   const scheduler = options.scheduler ?? createBatchScheduler(ledger, options.schedulerConfig);
+  const nonceTracker = options.nonceTracker
+    ?? (verifySecurity.trackNonce ? createNonceReplayTracker() : null);
   const schedulerConcurrency = Math.max(1, Number(options.schedulerConcurrency ?? 1) || 1);
   const schedulerAutoStart = options.schedulerAutoStart ?? true;
   let schedulerStarted = false;
@@ -155,7 +190,7 @@ export function createServer(options = {}) {
         if (!keyData || !apiKeyManager.canPerform(keyData.role, "admin")) {
           return sendJson(response, 403, { error: "Insufficient permissions" });
         }
-        const body = await readJson(request);
+        const body = await readJson(request, maxRequestBytes);
         const newKey = apiKeyManager.createApiKey(keyData.orgId, body.role ?? ROLES.USER);
         return sendJson(response, 201, newKey);
       }
@@ -184,11 +219,15 @@ export function createServer(options = {}) {
         if (keyData && !apiKeyManager.checkQuota(keyData.orgId).allowed) {
           return sendJson(response, 429, { error: "Quota exceeded", retryAfter: 3600 });
         }
-        const body = await readJson(request);
+        const body = await readJson(request, maxRequestBytes);
         const audio = Buffer.from(body.audioBase64 ?? "", "base64");
 
         if (audio.length === 0) {
           return sendJson(response, 400, { error: "audioBase64 is required" });
+        }
+
+        if (audio.length > maxAudioBytes) {
+          return sendJson(response, 413, { error: "audio_too_large", max_bytes: maxAudioBytes });
         }
 
         if (body.metadata != null && !isJsonObject(body.metadata)) {
@@ -248,7 +287,7 @@ export function createServer(options = {}) {
         if (keyData && !apiKeyManager.canPerform(keyData.role, "verify")) {
           return sendJson(response, 403, { error: "Insufficient permissions" });
         }
-        const body = await readJson(request);
+        const body = await readJson(request, maxRequestBytes);
 
         if (typeof body.voiceId !== "string" || body.voiceId.length === 0) {
           return sendJson(response, 400, { error: "voiceId is required" });
@@ -259,18 +298,59 @@ export function createServer(options = {}) {
 
       if (request.method === "POST" && request.url === "/verify-proof") {
         ensureSchedulerStarted();
-        const body = await readJson(request);
+        const body = await readJson(request, maxRequestBytes);
         const audio = Buffer.from(body.audioBase64 ?? "", "base64");
 
         if (audio.length === 0 || !body.proofPackage) {
           return sendJson(response, 400, { error: "audioBase64 and proofPackage are required" });
         }
 
-        const cryptographicVerification = verifyProofPackage(audio, body.proofPackage);
+        if (audio.length > maxAudioBytes) {
+          return sendJson(response, 413, { error: "audio_too_large", max_bytes: maxAudioBytes });
+        }
+
+        let watermarkStatus = "not_applicable";
+        const proofWatermarkPayload = body.proofPackage?.watermark_hex ?? body.proofPackage?.watermark_payload;
+
+        if (typeof proofWatermarkPayload === "string") {
+          try {
+            const watermarkVerification = await watermarkEngine.extract(audio, {
+              payload: proofWatermarkPayload
+            });
+
+            if (watermarkVerification.recovered === true) {
+              watermarkStatus = "present";
+            } else if ((watermarkVerification.sync_quality ?? 0) >= 0.25) {
+              watermarkStatus = "degraded";
+            } else {
+              watermarkStatus = "missing";
+            }
+          } catch {
+            watermarkStatus = "degraded";
+          }
+        }
+
+        const cryptographicVerification = verifyProofPackage(audio, body.proofPackage, {
+          requireProtocolVersion: true,
+          enforceFreshness: verifySecurity.enforceFreshness,
+          maxTimestampSkewSeconds: verifySecurity.maxTimestampSkewSeconds,
+          nonceTracker,
+          watermarkStatus
+        });
         const ledgerVerification = await ledger.verifyProofPackage(body.proofPackage);
+
+        const trustLevel = cryptographicVerification.cryptographic_valid
+          ? (watermarkStatus === "present" ? "HIGH" : "PARTIAL")
+          : "LOW";
 
         return sendJson(response, 200, {
           ...cryptographicVerification,
+          cryptographic_valid: cryptographicVerification.cryptographic_valid,
+          watermark: watermarkStatus,
+          identity_valid: cryptographicVerification.identity_valid,
+          metadata_consistent: cryptographicVerification.metadata_consistent,
+          protocol_valid: cryptographicVerification.protocol_valid,
+          trust_level: trustLevel,
           ledger: ledgerVerification
         });
       }
@@ -328,7 +408,7 @@ export function createServer(options = {}) {
           return sendJson(response, 400, { error: "batch_id is required" });
         }
 
-        const body = await readJson(request);
+        const body = await readJson(request, maxRequestBytes);
 
         if (body.async === true) {
           const scheduled = scheduler.schedule(batchId, {
@@ -393,6 +473,14 @@ export function createServer(options = {}) {
 
       return sendJson(response, 404, { error: "not_found" });
     } catch (error) {
+      if (error?.code === "REQUEST_TOO_LARGE") {
+        return sendJson(response, 413, { error: "request_too_large", max_bytes: maxRequestBytes });
+      }
+
+      if (error?.code === "INVALID_JSON") {
+        return sendJson(response, 400, { error: "invalid_json" });
+      }
+
       return sendJson(response, 500, {
         error: "internal_error",
         message: error.message

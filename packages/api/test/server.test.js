@@ -15,6 +15,9 @@ async function startTestServer(overrides = {}) {
     ledgerFilePath: path.join(tempDir, "events.jsonl"),
     batchFilePath: path.join(tempDir, "batches.jsonl"),
     batchSize: 2,
+    externalAnchorAllowLocalhost: true,
+    externalAnchorAllowPrivateNetworks: true,
+    externalAnchorAllowInsecureHttp: true,
     ...overrides
   });
 

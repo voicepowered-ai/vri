@@ -1,273 +1,250 @@
-<p align="center">
-  <img src="./assets/banner.png" alt="VRI Banner" width="100%">
-</p>
+# VRI · Voice Rights Infrastructure
 
-<p align="center">
-  <img src="https://img.shields.io/badge/status-protocol%20preview-0A1F3D?style=for-the-badge&logo=shield&logoColor=00E5FF" alt="Status Badge">
-  <img src="https://img.shields.io/badge/license-Apache%202.0-0A1F3D?style=for-the-badge&logo=apache&logoColor=4FC3F7" alt="License Badge">
-  <img src="https://img.shields.io/badge/stars-community%20ready-0A1F3D?style=for-the-badge&logo=github&logoColor=00E5FF" alt="Stars Badge">
-</p>
+Protocol for verifiable audio generation and independent proof verification.
 
-<h1 align="center">VRI · Voice Rights Infrastructure</h1>
-<p align="center"><strong>Own. Verify. Monetize voice.</strong></p>
-<p align="center">A premium, crypto-inspired protocol layer for registering voice ownership, generating fingerprints, verifying authenticity, and unlocking monetization for AI-native voice assets.</p>
+VRI does not detect audio. It verifies cryptographic proof attached to it.
 
-## Tagline
+## 1) What VRI Actually Is
 
-> Own the signal. Verify the source. Monetize the voice.
+VRI is a protocol for generating and verifying cryptographic proofs for audio produced by AI systems.
 
-## What Is VRI
+At its core, VRI defines a reproducible proof path:
 
-VRI is an enterprise-grade protocol for voice provenance. It gives developers and platforms a clean path from raw voice input to fingerprint generation, cryptographic hashing, registry-backed ownership, verification, and monetization. The result is a system that feels native to AI, media, and Web3 workflows without forcing unnecessary complexity into the product surface.
+- deterministic audio hash
+- watermark payload (embedded at inference time when VRI mode is enabled)
+- Ed25519 signature
+- proof package JSON
 
-**Elevator pitch:** VRI turns voice into a verifiable digital asset. By combining fingerprinting, deterministic hashing, registry records, and programmable verification, it helps builders prove who owns a voice, confirm whether an audio artifact is authentic, and connect usage to monetization rails.
+The Node.js code in this repository is a reference verifier and protocol implementation. It is not an audio generation engine.
 
-## How It Works
+## 2) The Problem
 
-```text
-Voice -> Fingerprint -> Hash -> Register -> Verify -> Monetize
-```
+Current audio pipelines often cannot answer basic trust questions deterministically:
 
-1. `Voice Input`
-   Capture a source recording or generated artifact.
-2. `Fingerprint`
-   Extract a stable representation of the voice signal.
-3. `Hash`
-   Produce a deterministic cryptographic digest.
-4. `Register`
-   Store ownership metadata and proof references in a registry layer.
-5. `Verify`
-   Validate that a voice asset matches its registered identity.
-6. `Monetize`
-   Connect verified usage to licensing, payments, or access rules.
+- Who generated this audio?
+- Was the generation authorized?
+- Can a third party verify the claim without trusting the generator?
 
-## Architecture
+Without deterministic verification, provenance claims become policy statements instead of technical guarantees.
 
-<p align="center">
-  <img src="./assets/architecture.png" alt="VRI architecture placeholder" width="100%">
-</p>
+## 3) The Solution
+
+VRI defines a proof package that can be verified independently.
+
+Verification uses public data (audio + proof package + public key material) and deterministic checks. No hidden server state is required for the core cryptographic validation path.
+
+VRI does not detect audio. It verifies cryptographic proof attached to it.
+
+## 4) How It Works (Real Flow)
 
 ```text
-┌──────────────┐    ┌────────────────────┐    ┌──────────────┐    ┌───────────────┐    ┌──────────────┐
-│ Voice Input  │ -> │ Fingerprint Engine │ -> │  Hash Layer  │ -> │    Registry   │ -> │ API / Tools  │
-└──────────────┘    └────────────────────┘    └──────────────┘    └───────────────┘    └──────────────┘
-        |                      |                        |                     |                    |
-        |                      |                        |                     |                    |
-        v                      v                        v                     v                    v
-  WAV / MP3 / PCM       Signal features          SHA-256 digest      Ownership record    Verify / monetize
+Inference Engine
+  -> Audio Generation
+  -> Watermark Injection (runtime; required for full VRI compliance)
+  -> Proof Generation (audio hash + signature)
+  -> External Verification
 ```
 
-Core repository references:
+Important boundary:
 
-- [VRI-PROTOCOL-v1.0.md](./VRI-PROTOCOL-v1.0.md)
-- [WHITEPAPER.md](./WHITEPAPER.md)
-- [docs/architecture.md](./docs/architecture.md)
-- [docs/verification.md](./docs/verification.md)
+- watermark injection happens during generation (inference runtime)
+- verification can happen later, offline, by independent parties
+- this repository provides reference verification and protocol tooling
 
-## Demo
+## 5) Core Concepts
 
-<p align="center">
-  <img src="./assets/demo.gif" alt="VRI demo placeholder" width="100%">
-</p>
+### Audio Hash
 
-`demo.gif` should show:
+SHA-256 over canonical PCM bytes. Canonicalization is deterministic so equivalent inputs produce the same digest under the same rules.
 
-1. A developer processing `voice.wav` from the command line.
-2. The example tooling returning a fingerprint, hash, and proof payload.
-3. A verification request confirming authenticity.
-4. A dashboard card indicating the asset is now ready for licensing or royalties.
+### Watermark Payload
 
-## Getting Started
+Fixed-length embedded payload used as a cryptographic carrier in VRI-enabled generation mode.
 
-Run the included local verification example:
+### Signature
+
+Ed25519 signature over the protocol message digest derived from canonical metadata, hash, watermark payload, and timestamp fields.
+
+### Proof Package
+
+Canonical JSON document containing verification material (hash, signature, metadata, key references, and protocol fields).
+
+## 6) Verification
+
+Verification is deterministic and reproducible:
+
+- parse proof package fields
+- recompute canonical audio hash
+- recompute message digest
+- verify Ed25519 signature
+
+Core cryptographic verification works without blockchain and can run offline.
+When Level 3 ledger claims are present, verifiers additionally validate the referenced usage event and anchor evidence.
+
+VRI does not detect audio. It verifies cryptographic proof attached to it.
+
+### Verification Security Hardening (Implemented)
+
+The reference verifier is now fail-closed for critical proof fields.
+
+- `protocol_version` is required and validated (`1.0` in the strict path).
+- `creator_id` is re-derived from `public_key` and enforced.
+- `canonical_metadata` must match `metadata` when both are present.
+- Conflicting watermark fields (`watermark_hex` vs `watermark_payload`) are rejected.
+
+`/verify-proof` also returns structured trust signals:
+
+- `cryptographic_valid`
+- `watermark`: `present` | `missing` | `degraded` | `not_applicable`
+- `identity_valid`
+- `metadata_consistent`
+- `protocol_valid`
+- `trust_level`: `HIGH` | `PARTIAL` | `LOW`
+
+Operational hardening included in the API and anchoring boundary:
+
+- Request body and audio size limits (memory DoS protection).
+- External anchor publication protections (SSRF controls, endpoint policy, network checks).
+- External request timeout and response-size caps.
+- Optional freshness and nonce replay checks for verification policy.
+
+## 7) Architecture
+
+### Inference Runtime (Not in this repo)
+
+System that generates audio and injects watermark payload during runtime.
+
+### Reference Verifier (This repo)
+
+Node.js reference implementation for canonicalization, proof generation/validation logic, API surface, CLI, and interoperability tests.
+
+### Optional Ledger
+
+Append-only event and batch anchoring utilities for auditability. Useful for operations, not required for cryptographic proof verification itself.
+
+## 8) What This Repo Contains
+
+- Protocol specification and companion docs
+- Node.js reference verifier and core cryptographic flow
+- CLI and HTTP API for register/verify/proof workflows
+- Optional ledger and batch anchoring components
+- Examples and fixtures for interoperability tests
+
+Key files and directories:
+
+- [VRI-PROTOCOL-v1.0.md](VRI-PROTOCOL-v1.0.md)
+- [docs](docs)
+- [packages/core](packages/core)
+- [packages/api](packages/api)
+- [packages/cli](packages/cli)
+- [packages/ledger](packages/ledger)
+- [examples](examples)
+- [fixtures](fixtures)
+
+## 9) What Is Not Included
+
+- No full inference engine or TTS runtime
+- No production monetization platform
+- No turnkey platform integration layer
+
+The repository focuses on verifiable proof mechanics, reference verification, and protocol interoperability.
+
+## 10) Demo (Input -> Audio -> Proof -> Verify VALID)
+
+### Local verifier against fixture
 
 ```bash
 node examples/verify-audio.js examples/test/audio.wav examples/test/proof.json
 ```
 
-Expected response:
+Expected output:
 
 ```text
 VALID
 ```
 
-Generate an example audio artifact:
+### API and CLI quickstart
 
-```bash
-node examples/generate-audio.js
-```
-
-Start the Node reference API:
+Start API:
 
 ```bash
 node packages/api/src/server.js
 ```
 
-Use the Node CLI scaffold:
+Register via CLI:
 
 ```bash
 node packages/cli/src/index.js register examples/test/audio.wav
 ```
 
-Reference CLI shape for a future VRI command:
+Verify via CLI:
 
 ```bash
-vri register voice.wav
+node packages/cli/src/index.js verify examples/test/audio.wav examples/test/proof.json
 ```
 
-Illustrative response:
-
-```json
-{
-  "voiceId": "vri_xxx",
-  "status": "registered"
-}
-```
-
-## API Overview
-
-### `registerVoice(file)`
-
-Protocol-facing shape for registering a voice asset:
-
-```json
-{
-  "voiceId": "vri_xxx",
-  "status": "registered",
-  "fingerprint": "fp_xxx",
-  "audioHash": "sha256_xxx",
-  "registry": "vri:testnet"
-}
-```
-
-### `verifyVoice(id)`
-
-Protocol-facing shape for verifying a registered voice:
-
-```json
-{
-  "voiceId": "vri_xxx",
-  "status": "verified",
-  "authenticity": "confirmed",
-  "registry": "vri:testnet"
-}
-```
-
-### CLI
+### Run test suite
 
 ```bash
-vri register voice.wav
+npm test
 ```
 
-Returns:
+## 11) Roadmap
 
-```json
-{
-  "voiceId": "vri_xxx",
-  "status": "registered"
-}
-```
+### Current Priority
 
-## Example Tooling
+- [x] Proof package generation aligned with protocol message format
+- [x] Canonical metadata serialization
+- [x] Local append-only usage-event ledger
+- [x] Local batch anchoring with Merkle roots
+- [x] Merkle inclusion proofs per event
+- [x] External anchor publication for batches
+- [x] Canonical Audio deterministic normalization
+- [x] Production watermark engine (inference-facing primitive)
+- [x] Key management and signer rotation strategy
 
-The executable code currently lives under [examples/generate-audio.js](./examples/generate-audio.js) and [examples/verify-audio.js](./examples/verify-audio.js). These examples demonstrate the local verification flow already present in the repository without introducing a separate SDK layer.
+### MVP
 
-## Node Architecture
+- [x] Deterministic resampling for non-48 kHz inputs
+- [x] Float32 IEEE PCM WAV support alongside 16/24-bit
+- [x] Batch publication state in API responses
+- [x] CLI support for events, batches, proofs
+- [x] Protocol fixtures and compatibility docs
 
-For a native JavaScript implementation path, the repository now includes a lightweight package layout:
+### Beta
 
-- `packages/core`: protocol-safe hashing, fingerprinting, registration, and verification primitives.
-- `packages/api`: minimal HTTP surface for register and verify flows.
-- `packages/cli`: CLI scaffold for local developer workflows.
-- `packages/watermark`: production watermark engine with robust embedding and extraction primitives.
+- [x] Storage abstraction (JSONL, Memory, Postgres, MongoDB)
+- [x] MongoDB as beta default reference backend
+- [x] Audit logging for register/verify/anchoring events
+- [x] API key auth and role-based access control
+- [x] Multitenancy with organization quotas
+- [x] Background anchoring scheduler with retry policy
+- [x] Profiling for DSP-heavy paths
 
-## Use Cases
+### Production
 
-- AI companies registering synthetic voices before commercial deployment.
-- Media companies verifying talent-approved voice assets in publishing pipelines.
-- Marketplaces enabling licensing and royalty distribution for voice IP.
-- Web3 builders anchoring voice proofs to wallets, attestations, or onchain registries.
-- Enterprise platforms creating compliance-grade provenance around voice interactions.
-
-## Repository Structure
-
-```text
-assets/
-  banner.png
-  architecture.png
-  demo.gif
-  logo.png
-  logo-readme.png
-packages/
-  core/
-  api/
-  cli/
-  ledger/
-  watermark/
-examples/
-  generate-audio.js
-  verify-audio.js
-  proof-package.json
-docs/
-  architecture.md
-  verification.md
-  system-overview.md
-README.md
-package.json
-```
-
-## Roadmap
-
-### MVP Track ✅
-- [x] Publish protocol and whitepaper foundation.
-- [x] Add local ledger batches and Merkle inclusion proofs.
-- [x] Canonical Audio pipeline with deterministic resampling (16/24/32-bit PCM WAV, 44.1-96 kHz -> 48 kHz).
-- [x] Production watermark engine (Hamming(7,4) ECC, sync word, blind extraction).
-- [x] Key management with rotation and private key protection.
-- [x] External anchor publication for batches.
-- [x] CLI commands for querying events, batches, and proofs.
-- [x] API batch publication state in register responses.
-
-### Beta Track ✅
-- [x] Storage abstraction layer with pluggable backends (JSONL, Memory, Postgres, MongoDB).
-- [x] Reference storage backend beyond local JSONL files (MongoDB selected as beta default).
-- [x] Audit logging for voice registration, verification, and anchoring events.
-- [x] API key authentication with role-based access control.
-- [x] Multitenancy with organization-level quota management.
-- [x] Background anchoring scheduler with retry policy.
-- [x] Performance profiling for DSP-heavy paths.
-
-### Production Track ✅
-- [x] Worker Thread DSP acceleration (`DspPool` + `dsp-worker.js`).
-- [x] KMS/HSM-backed signing flow (`createKmsKeyManager` adapter + tests).
-- [x] Compliance and interoperability suite against protocol fixtures.
-- [x] External batch publication with confirmation tracking.
+- [x] Worker-thread DSP acceleration (DspPool)
+- [x] KMS/HSM signing adapter and coverage
+- [x] External batch publication with confirmation tracking
+- [x] Compliance and interoperability suite against fixtures
 
 ### Next Milestones
-- [ ] Introduce remote registry integration (mainnet anchor provider).
-- [ ] Add service endpoints for proof-package signing and verification with key rotation.
-- [ ] Ship reference dashboards for licensing and monetization flows.
-- [ ] Expand to wallet-bound claims and programmable access control.
 
-## Tasks
+- [ ] Remote registry integration (mainnet anchor provider)
+- [ ] Service endpoints for proof-package signing and verification with key rotation
+- [ ] Reference dashboards for licensing and monetization flows
+- [ ] Wallet-bound claims and programmable access control
 
-The live implementation task list is tracked in [docs/tasks.md](./docs/tasks.md).
+Live implementation checklist: [docs/tasks.md](docs/tasks.md)
 
-## Vision
+## 12) Additional Docs
 
-Voice is becoming a programmable interface, a commercial asset, and a new category of identity. VRI is designed to become the trust layer beneath that shift: a protocol that lets builders prove ownership, confirm origin, and route value with confidence across AI, media, and crypto-native ecosystems.
-
-## Existing Protocol Material
-
-This repository already contains the deeper protocol specification and companion documents:
-
-- [VRI-PROTOCOL-v1.0.md](./VRI-PROTOCOL-v1.0.md)
-- [WHITEPAPER.md](./WHITEPAPER.md)
-- [DOCUMENTATION.md](./DOCUMENTATION.md)
-- [docs/system-overview.md](./docs/system-overview.md)
-- [docs/crypto-spec.md](./docs/crypto-spec.md)
-- [docs/watermark-spec.md](./docs/watermark-spec.md)
+- [DOCUMENTATION.md](DOCUMENTATION.md)
+- [docs/system-overview.md](docs/system-overview.md)
+- [docs/crypto-spec.md](docs/crypto-spec.md)
+- [docs/watermark-spec.md](docs/watermark-spec.md)
+- [docs/verification.md](docs/verification.md)
 
 ## License
 
-Apache 2.0
+Apache-2.0
