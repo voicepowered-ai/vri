@@ -10,10 +10,6 @@
 
 # VRI · Voice Rights Infrastructure
 
-<p align="center">
-  <img src="./assets/logo-readme.png" alt="VRI Logo" width="220">
-</p>
-
 Protocol for verifiable audio generation and independent proof verification.
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
