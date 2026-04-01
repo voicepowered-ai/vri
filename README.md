@@ -1,4 +1,18 @@
+<p align="center">
+  <img src="./assets/banner.png" alt="VRI Banner" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/status-protocol%20v1.0-0A1F3D?style=for-the-badge&logo=shield&logoColor=00E5FF" alt="Status Badge">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-0A1F3D?style=for-the-badge&logo=apache&logoColor=4FC3F7" alt="License Badge">
+  <img src="https://img.shields.io/badge/verifier-reference%20implementation-0A1F3D?style=for-the-badge&logo=nodedotjs&logoColor=00E5FF" alt="Verifier Badge">
+</p>
+
 # VRI · Voice Rights Infrastructure
+
+<p align="center">
+  <img src="./assets/logo-readme.png" alt="VRI Logo" width="220">
+</p>
 
 Protocol for verifiable audio generation and independent proof verification.
 
