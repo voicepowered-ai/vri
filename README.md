@@ -7,6 +7,15 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-0A1F3D?style=for-the-badge&logo=apache&logoColor=4FC3F7" alt="License Badge">
   <img src="https://img.shields.io/badge/verifier-reference%20implementation-0A1F3D?style=for-the-badge&logo=nodedotjs&logoColor=00E5FF" alt="Verifier Badge">
 </p>
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://github.com/tu-usuario/vri">
+<meta property="og:title" content="VRI · Voice Rights Infrastructure">
+<meta property="og:description" content="System-level standard for verifiable recorded and generated audio provenance.">
+<meta property="og:image" content="https://raw.githubusercontent.com/tu-usuario/vri/main/assets/banner.png">
+
+<meta property="twitter:card" content="summary_large_image">
+<meta property="twitter:title" content="VRI · Voice Rights Infrastructure">
+<meta property="twitter:image" content="https://raw.githubusercontent.com/tu-usuario/vri/main/assets/banner.png">
 
 # VRI · Voice Rights Infrastructure
 
