@@ -1,0 +1,24 @@
+{
+  "artifact": "vri.timestamp-trust-profiles.release",
+  "version": 1,
+  "source_catalog": "docs/formal/timestamp-trust-profiles.catalog.json",
+  "generated_at": "2026-04-03T20:32:49.517Z",
+  "catalog_digest": "0xe9f49643bb0de761c0466823a797ead4166f8818f5b40c1d03940e8b8e3fd854",
+  "profile_count": 2,
+  "profiles": [
+    {
+      "profile_id": "tsa-inline-staging",
+      "profile_name": "Inline Staging TSA Policy",
+      "version": 1,
+      "effective_at": null,
+      "profile_digest": "0x3f747ace1a9b3fc9117a983e4bc9355546a8a3c8659b3f24f8fa0d7195974509"
+    },
+    {
+      "profile_id": "tsa-eu-prod-v1",
+      "profile_name": "EU Production TSA Policy",
+      "version": 7,
+      "effective_at": 1774995000,
+      "profile_digest": "0xb235bd63d5de0d4101ba8eca7c00a433a2b8a60b94b0db6d2d2542f2c1fcab95"
+    }
+  ]
+}

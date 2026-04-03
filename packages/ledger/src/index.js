@@ -410,10 +410,14 @@ export function createUsageEvent(proofPackage, context = {}) {
 
   return {
     event_id: context.eventId ?? proofPackage.usage_event_id ?? `evt_${crypto.randomUUID()}`,
+    proof_type: proofPackage.proof_type ?? null,
+    compliance_level: proofPackage.compliance_level ?? null,
+    key_id: proofPackage.key_id ?? null,
     creator_id: proofPackage.creator_id,
     public_key: proofPackage.public_key,
     audio_hash: proofPackage.audio_hash,
-    watermark_payload: proofPackage.watermark_payload,
+    watermark_payload: proofPackage.watermark_payload ?? null,
+    timestamp_attestation_digest: proofPackage.timestamp_attestation?.digest ?? null,
     timestamp: proofPackage.timestamp,
     status: context.status ?? "RECORDED",
     model,
@@ -691,9 +695,13 @@ export class FileLedger {
     }
 
     const consistent = event.audio_hash === proofPackage.audio_hash
+      && event.proof_type === (proofPackage.proof_type ?? null)
+      && event.compliance_level === (proofPackage.compliance_level ?? null)
+      && event.key_id === (proofPackage.key_id ?? null)
       && event.public_key === proofPackage.public_key
       && event.creator_id === proofPackage.creator_id
       && event.watermark_payload === proofPackage.watermark_payload
+      && event.timestamp_attestation_digest === (proofPackage.timestamp_attestation?.digest ?? null)
       && event.timestamp === proofPackage.timestamp
       && event.ledger_anchor === proofPackage.ledger_anchor;
     const batch = event.ledger_batch_id ? await this.getBatch(event.ledger_batch_id) : null;

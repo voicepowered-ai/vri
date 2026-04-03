@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document provides a high-level architectural view of VRI, including system components, data flows, integration points, and deployment considerations.
+This document provides a high-level architectural view of VRI, including system components, data flows, integration points, and deployment considerations. It is limited to provenance, verification, and evidentiary infrastructure; downstream business systems are separate integrations.
 
 ---
 
@@ -29,8 +29,8 @@ This document provides a high-level architectural view of VRI, including system 
     │ • Intercepts TTS │              │                  │
     │   output         │              │ • Extract WM     │
     │ • Triggers       │              │ • Verify sig     │
-    │   watermarking   │              │ • Lookup user    │
-    │ • Queues task   │              │ • Log event      │
+    │   watermarking   │              │ • Lookup signer  │
+    │ • Queues task   │              │ • Log evidence   │
     └────────┬─────────┘              │ • Return result  │
              │                        └────────┬─────────┘
              v                                 │
@@ -62,7 +62,7 @@ This document provides a high-level architectural view of VRI, including system 
    │ • Signed URLs  │        │  Ledger Service          │
    │ • Cache header │        │  (Immutable Log)         │
    └────────────────┘        │                          │
-                             │ • Append usage event     │
+                             │ • Append evidence event  │
                              │ • Hash-anchor to tree    │
                              │ • Record verification    │
                              │ • Prevent tampering      │
@@ -98,7 +98,7 @@ This document provides a high-level architectural view of VRI, including system 
 ```
 POST   /v1/generate          Create audio with watermark
 POST   /v1/verify            Verify audio + check ledger
-GET    /v1/events/:id        Retrieve usage event
+GET    /v1/events/:id        Retrieve verification event
 GET    /v1/status            System health
 ```
 
@@ -116,15 +116,15 @@ GET    /v1/status            System health
 
 **Workflow**:
 ```
-TTS Call → Hook Response → Queue Watermarking → Return to Client
+TTS Call → Hook Response → Watermark → Sign → Return proof-carrying artifact
 ```
 
 **Implementation**:
 - Plugs into OpenAI SDK, ElevenLabs API, local models
 - Captures raw WAV/MP3 from TTS
-- Submits to watermark queue (SQS/RabbitMQ/Kafka)
-- Returns immediately (async)
-- Notifies client when watermarked audio is ready
+- MAY use internal queues for processing
+- MUST NOT emit protocol-complete output before watermarking and signing complete
+- MUST return an explicit incomplete state instead of raw or unsigned audio if processing cannot complete
 
 ---
 
@@ -161,7 +161,7 @@ TTS Call → Hook Response → Queue Watermarking → Return to Client
 
 **Process**:
 1. Receive watermark payload from daemon
-2. Compute SHA256 hash of payload + metadata + timestamp
+2. Compute SHA-256 over the v2.0 signed tuple including proof type, compliance level, watermark flag, watermark payload-or-zero, canonical audio hash, timestamp, and canonical metadata
 3. Sign hash with creator's private key (EdDSA)
 4. Generate proof package (signature + public key + metadata)
 5. Store signature in ledger
@@ -176,7 +176,7 @@ TTS Call → Hook Response → Queue Watermarking → Return to Client
 
 ### 5. Verification Service
 
-**Responsibility**: Extract watermark, validate signature, log usage
+**Responsibility**: Extract watermark, validate signature, log verification evidence
 
 **Critical Path** (<500ms):
 ```
@@ -185,7 +185,7 @@ TTS Call → Hook Response → Queue Watermarking → Return to Client
 3. Deserialize watermark_payload
 4. Hash payload + metadata + timestamp
 5. Verify EdDSA signature with public key from payload
-6. If valid: Log usage event, return "verified"
+6. If valid: Log verification event, return "verified"
 7. If invalid: Invoke fingerprinting forensic path, return "unverified"
 ```
 
@@ -202,7 +202,7 @@ TTS Call → Hook Response → Queue Watermarking → Return to Client
 
 ### 6. Ledger Service
 
-**Responsibility**: Immutable usage record + hash anchoring
+**Responsibility**: Immutable verification record + hash anchoring
 
 **Schema**:
 ```
@@ -211,8 +211,8 @@ TABLE usage_events (
   creator_id VARCHAR(255),
   audio_hash VARCHAR(64),  -- SHA256 of watermark payload
   timestamp BIGINT,
-  platform VARCHAR(50),
-  context JSON,            -- {views, location, etc.}
+  source_system VARCHAR(50),
+  context JSON,            -- {request_id, tenant_id, verifier_state, ...}
   signature VARCHAR(128),  -- Signed by verification service
   ledger_anchor VARCHAR(64), -- Hash tree root at time of event
   batch_id VARCHAR(64),    -- For anchoring
@@ -263,28 +263,9 @@ Incoming Audio → MFCC Extraction → Hash-chain → LSH Query → Top-K Result
 
 ---
 
-### 8. Wallet Service
+### 8. Downstream Integrations
 
-**Responsibility**: Track earnings, settle micropayments
-
-**Model**:
-```
-Creator's Wallet:
-  balance = Σ(usage_events) in ledger
-  pending_settlement = true if > $10 AND < 24h old
-  
-Settlement process:
-  1. Creator requests payout
-  2. Verify balance >= $10
-  3. Create transaction record (immutable)
-  4. Debit wallet
-  5. Credit external account (Stripe, ACH, crypto)
-  6. Record settlement in ledger
-```
-
-**Rates**:
-- Stripe/ACH fee: 2% (for payout volume < $100k/month)
-- Crypto fee: $1 (Polygon/Solana cheap tx)
+Downstream business workflows are intentionally out of scope for the protocol core. Those systems may consume VRI events as evidence inputs, but they remain separate product layers with their own policy, compliance, and accounting requirements.
 
 ---
 
@@ -355,16 +336,15 @@ Settlement process:
       - Goto step 4
 
 3. Valid watermark path:
-   - Log usage event to ledger
-   - Increment creator wallet
-   - Query creator info
+   - Log verification event to ledger
+   - Query signer info
    - Return:
      {
        verified: true,
        status: "authentic_watermark",
        creator: "0x...",
        created_at: 1234567890,
-       usage_recorded: {event_id, timestamp}
+       verification_recorded: {event_id, timestamp}
      }
 
 4. Forensic detection: fingerprinting path:

@@ -181,12 +181,17 @@ def sign_watermark(creator_id, watermark_payload, metadata):
     # Retrieve creator's private key from KMS
     private_key = kms.get_key(f"creator_{creator_id}")
     
-    # Construct message
+    # Construct the v2.0 signed tuple
     timestamp = int(time.time())
     message = hashlib.sha256(
-        watermark_payload + 
-        metadata.encode() + 
-        str(timestamp).encode()
+        b"VRI-SIG-V2\x00" +
+        proof_type_code +
+        compliance_level_byte +
+        watermark_flag +
+        watermark_payload_or_zero +
+        audio_hash +
+        timestamp.to_bytes(8, "big") +
+        canonical_metadata
     ).digest()
     
     # Sign with EdDSA
@@ -194,13 +199,15 @@ def sign_watermark(creator_id, watermark_payload, metadata):
     
     # Create proof package
     proof_package = {
+        'protocol_version': '2.0',
+        'proof_type': 'GENERATED',
+        'compliance_level': 2,
         'watermark_payload': base64.b64encode(watermark_payload).decode(),
         'watermark_hex': watermark_payload.hex(),
         'signature': signature.hex(),
         'public_key': public_key_for_creator(creator_id),
         'timestamp': timestamp,
         'metadata': metadata,
-        'ledger_anchor': get_latest_merkle_root(),
         'verification_endpoint': 'https://api.vri.app/v1/verify'
     }
     
@@ -251,7 +258,6 @@ Input: audio_buffer, [proof_package]
 3. Logging (50ms)
    ├─ Create usage_event record
    ├─ Append to ledger
-   ├─ Increment creator's wallet
    └─ Return to client
 
 Total: ~400ms
@@ -344,7 +350,6 @@ def verify_audio(audio_buffer, proof_package=None):
 CREATE TABLE creators (
     creator_id UUID PRIMARY KEY,
     public_key BYTEA NOT NULL UNIQUE,
-    wallet_address VARCHAR(255),
     created_at BIGINT,
     updated_at BIGINT,
     metadata JSONB
@@ -356,8 +361,8 @@ CREATE TABLE usage_events (
     audio_hash VARCHAR(64) NOT NULL,
     watermark_payload BYTEA,
     timestamp BIGINT NOT NULL,
-    platform VARCHAR(50),
-    context JSONB,  -- {views: 1000, location: "US", etc.}
+    source_system VARCHAR(50),
+    context JSONB,  -- {request_id: "...", tenant_id: "...", ...}
     signature VARCHAR(128),
     batch_id VARCHAR(64) REFERENCES merkle_batches(batch_id),
     created_at BIGINT,
@@ -380,28 +385,6 @@ CREATE TABLE merkle_batches (
     
     INDEX (anchor_time),
     INDEX (blockchain_tx)
-);
-
-CREATE TABLE wallets (
-    creator_id UUID PRIMARY KEY REFERENCES creators(creator_id),
-    balance_usdc BIGINT,  -- in cents (microUSD)
-    pending_amount BIGINT,
-    last_settlement BIGINT,
-    settlement_address VARCHAR(255),
-    updated_at BIGINT
-);
-
-CREATE TABLE transactions (
-    transaction_id UUID PRIMARY KEY,
-    creator_id UUID REFERENCES creators(creator_id),
-    amount BIGINT,
-    status VARCHAR(20),  -- pending, completed, failed
-    payment_method VARCHAR(20),  -- stripe, ach, crypto
-    created_at BIGINT,
-    completed_at BIGINT,
-    
-    INDEX (creator_id, status),
-    INDEX (created_at)
 );
 
 CREATE TABLE audit_log (
@@ -433,20 +416,13 @@ def log_usage_event(creator_id, audio_hash, watermark_payload, context):
         audio_hash=audio_hash,
         watermark_payload=watermark_payload,
         timestamp=int(time.time()),
-        platform=context.get('platform'),
+        source_system=context.get('source_system'),
         context=context,
         batch_id=None  # Will be set during anchoring
     )
     
     session.add(event)
     session.commit()
-    
-    # Increment wallet
-    wallet = session.query(Wallet).filter_by(creator_id=creator_id).first()
-    if wallet:
-        royalty = calculate_royalty(context)
-        wallet.balance_usdc += royalty
-        session.commit()
     
     return event.event_id
 
@@ -510,66 +486,13 @@ def verify_ledger_tamper():
 
 ---
 
-### 6. Wallet Service
+### 6. Downstream Business Integrations
 
-**Language**: Node.js + Stripe SDK
+Any downstream business workflow is intentionally outside the VRI core. Those capabilities may consume VRI evidence, but they are product extensions rather than protocol requirements.
 
-#### Settlement Logic
+Implementations that need them should keep them behind a separate service boundary with their own schemas, policies, trust controls, and legal review.
 
-```javascript
-async function settleWallet(creatorId, paymentMethod) {
-    // Get current balance
-    const wallet = await Wallet.findById(creatorId);
-    
-    if (wallet.balance_usdc < 1000) {  // $10 minimum
-        throw new Error('Insufficient balance');
-    }
-    
-    // Create transaction record (immutable)
-    const tx = await Transaction.create({
-        creator_id: creatorId,
-        amount: wallet.balance_usdc,
-        payment_method: paymentMethod,
-        status: 'pending'
-    });
-    
-    try {
-        // Process payment
-        if (paymentMethod === 'stripe') {
-            const charge = await stripe.charges.create({
-                amount: wallet.balance_usdc,
-                currency: 'usd',
-                source: wallet.stripe_token,
-                description: `VRI Payout for ${creatorId}`
-            });
-            
-            tx.external_id = charge.id;
-            tx.status = 'completed';
-            
-        } else if (paymentMethod === 'crypto') {
-            const txHash = await sendCrypto(wallet.crypto_address, wallet.balance_usdc);
-            tx.external_id = txHash;
-            tx.status = 'pending';  // Wait for confirmation
-        }
-        
-        // Debit wallet (atomic)
-        wallet.balance_usdc = 0;
-        wallet.pending_amount = 0;
-        wallet.last_settlement = Date.now();
-        
-        await wallet.save();
-        await tx.save();
-        
-        return tx;
-        
-    } catch (error) {
-        tx.status = 'failed';
-        tx.error_message = error.message;
-        await tx.save();
-        throw error;
-    }
-}
-```
+The VRI core should expose canonical proofs, verification events, timestamp evidence, and append-only ledger records. Downstream systems may consume those artifacts, but they MUST NOT redefine the proof semantics or alter canonical protocol outputs.
 
 ---
 
@@ -703,7 +626,7 @@ Asynchronous (can be delayed):
   - Watermarking (queue-based)
   - Ledger anchoring (batched, 10-min periods)
   - Fingerprint indexing (offline, periodic)
-  - Wallet settlement (on-demand)
+  - Downstream business processing (on-demand, outside core scope)
 ```
 
 ---

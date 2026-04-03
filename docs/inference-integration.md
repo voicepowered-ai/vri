@@ -1489,32 +1489,21 @@ Error Types:
   • Quality validation failed (SNR too low)
 ```
 
-**Fallback Decision Tree**:
+**Failure Semantics**:
 
 ```
 Watermark fails?
     ↓
-[Is watermarking critical?]
-    ├─ YES (user explicitly requires it)
-    │   └─→ Fail the request, return error
-    │       User can retry or fallback to un-watermarked generation
-    │
-    └─ NO (watermarking is optional)
-        └─→ Log error, continue with unwatermarked audio
-            ├─ Sign the raw audio instead
-            ├─ Mark proof package: watermark_included=false
-            └─ Return audio + reduced-trust proof
+Fail request or return explicit incomplete state
+    ├─ Do NOT emit compliant audio
+    ├─ Do NOT sign raw audio as fallback
+    └─ Do NOT silently downgrade compliance
 
 Response format:
   {
-    "audio": "...",
-    "proof_package": {
-      "watermark": null,
-      "watermark_attempted": true,
-      "watermark_error": "daemon_timeout",
-      "signature": "...",  // signature covers raw audio
-      "trust_level": "low"
-    }
+    "status": "incomplete",
+    "error": "watermark_failed",
+    "proof_package": null
   }
 ```
 
@@ -1530,30 +1519,20 @@ Error Types:
   • Key rotation in progress
 ```
 
-**Fallback Strategy**:
+**Failure Strategy**:
 
 ```
 Sign fails?
     ↓
-[Can we retry with fallback key?]
-    ├─ YES (backup key available, key rotation protocol)
-    │   └─→ Try backup key → return signature
-    │
-    └─ NO (critical signing service failure)
-        └─→ Queue for later signing
-            ├─ Persist audio to S3 with temporary key
-            ├─ Return token + "signature pending"
-            ├─ Signing service catches up in background
-            └─ Push result to client webhook when ready
+Return explicit incomplete state or fail request
+    ├─ MAY retain internal audio for later completion
+    └─ MUST NOT emit a compliant artifact before full proof completion
 
 Response format (temporary):
   {
-    "audio": "...",
-    "audio_location": "s3://bucket/temp/request_id.wav",
     "request_id": "...",
     "proof_package": null,
-    "status": "awaiting_signature",
-    "estimated_signature_ready": 60  // seconds
+    "status": "awaiting_signature"
   }
 ```
 
@@ -1575,12 +1554,7 @@ Option A: Hard Fail (immediate error)
   Cons: User gets nothing
   Use: Financial/security-critical applications
 
-Option B: Graceful Degrade (return audio without proof)
-  Pros: User gets usable audio
-  Cons: Audio is unverified/untracked
-  Use: Non-critical, development, testing
-
-Option C: Queue for Later (async recovery)
+Option B: Queue for Later (async recovery)
   Pros: User gets token, audio preserved, retry automatic
   Cons: Asynchronous, delayed result
   Use: Batch processing, asynchronous recovery

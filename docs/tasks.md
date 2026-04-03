@@ -40,7 +40,10 @@
 
 ## Next Milestones
 
+- [ ] Close `WHITEPAPER.md` as the public v2.0 technical constitution
+- [ ] Ship a manual web verifier for beta audio + proof validation
+- [ ] Build a first studio-facing VST/AU prototype for `RECORDED` issuance workflows
 - [ ] Introduce remote registry integration (mainnet anchor provider)
 - [ ] Add service endpoints for proof-package signing and verification with key rotation
-- [ ] Ship reference dashboards for licensing and monetization flows
-- [ ] Expand to wallet-bound claims and programmable access control
+- [ ] Ship reference dashboards for evidence operations and audit review
+- [ ] Expand to identity-bound claims and programmable access control

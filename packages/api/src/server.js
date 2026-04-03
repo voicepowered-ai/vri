@@ -1,9 +1,18 @@
 import http from "node:http";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
+  createSessionChallenge,
+  getTimestampAttestationReceiptDigest,
+  getCanonicalIdentityString,
   registerVoice,
   verifyVoice,
   verifyProofPackage,
-  createNonceReplayTracker
+  createNonceReplayTracker,
+  PROOF_TYPES,
+  SESSION_SCOPES,
+  verifyIdentityAssertion
 } from "../../core/src/index.js";
 import { createKeyManager } from "../../core/src/key-manager.js";
 import { createAuditLog, EVENT_TYPES } from "../../core/src/audit-log.js";
@@ -12,6 +21,15 @@ import { createWatermarkEngine } from "../../watermark/src/index.js";
 import { createApiKeyManager, ROLES } from "../../core/src/api-key-manager.js";
 import { createPerfProfiler } from "../../core/src/perf-profiler.js";
 import { createBatchScheduler } from "../../ledger/src/scheduler.js";
+import { createRevocationRegistry } from "../../core/src/revocation-registry.js";
+import {
+  normalizeRfc3161TimestampAttestation,
+  verifyRfc3161TimestampAttestation
+} from "../../core/src/timestamp-attestation.js";
+import {
+  buildOpenSslTimestampVerifyArgs,
+  parseRfc3161TokenWithOpenSsl
+} from "../../core/src/openssl-rfc3161.js";
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
@@ -224,6 +242,115 @@ function isJsonObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function parseComplianceLevel(value, { required = false } = {}) {
+  if (value == null) {
+    if (required) {
+      return { ok: false, error: "compliance_level is required" };
+    }
+    return { ok: true, level: null };
+  }
+
+  if (!Number.isInteger(value) || value < 1 || value > 3) {
+    return { ok: false, error: "compliance_level must be an integer in range [1,3]" };
+  }
+
+  return { ok: true, level: value };
+}
+
+function parseProofType(value, { required = false } = {}) {
+  if (value == null) {
+    if (required) {
+      return { ok: false, error: "proofType is required" };
+    }
+    return { ok: true, proofType: null };
+  }
+
+  if (value !== PROOF_TYPES.RECORDED && value !== PROOF_TYPES.GENERATED) {
+    return { ok: false, error: `proofType must be ${PROOF_TYPES.RECORDED} or ${PROOF_TYPES.GENERATED}` };
+  }
+
+  return { ok: true, proofType: value };
+}
+
+function parseSessionScopeList(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return { ok: false, error: "sessionScope must be a non-empty array" };
+  }
+
+  const allowedScopes = new Set(Object.values(SESSION_SCOPES));
+
+  for (const entry of value) {
+    if (typeof entry !== "string" || !allowedScopes.has(entry)) {
+      return {
+        ok: false,
+        error: `sessionScope contains an unsupported value; allowed values are: ${[...allowedScopes].join(", ")}`
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    scopes: [...new Set(value)].sort()
+  };
+}
+
+function isHexSha256(value) {
+  return typeof value === "string" && /^0x[0-9a-f]{64}$/i.test(value);
+}
+
+function validateExportLineageMetadata(metadata) {
+  if (!isJsonObject(metadata)) {
+    return { ok: false, error: "metadata must be a JSON object" };
+  }
+
+  if (!isJsonObject(metadata.lineage)) {
+    return { ok: false, error: "metadata.lineage is required for export registration" };
+  }
+
+  const lineage = metadata.lineage;
+
+  if (!isHexSha256(lineage.parent_audio_hash)) {
+    return { ok: false, error: "metadata.lineage.parent_audio_hash must be a 0x-prefixed 32-byte SHA-256 hex string" };
+  }
+
+  if (lineage.source_proof_type !== PROOF_TYPES.RECORDED && lineage.source_proof_type !== PROOF_TYPES.GENERATED) {
+    return { ok: false, error: `metadata.lineage.source_proof_type must be ${PROOF_TYPES.RECORDED} or ${PROOF_TYPES.GENERATED}` };
+  }
+
+  if (typeof lineage.source_event_id !== "string" || lineage.source_event_id.length === 0) {
+    return { ok: false, error: "metadata.lineage.source_event_id is required for export registration" };
+  }
+
+  return { ok: true };
+}
+
+async function validateExportLineageAgainstLedger(metadata, ledger) {
+  const lineageValidation = validateExportLineageMetadata(metadata);
+
+  if (!lineageValidation.ok) {
+    return lineageValidation;
+  }
+
+  const parentEvent = await ledger.getEvent(metadata.lineage.source_event_id);
+
+  if (!parentEvent) {
+    return { ok: false, error: "metadata.lineage.source_event_id does not reference an existing ledger event" };
+  }
+
+  if (parentEvent.audio_hash !== metadata.lineage.parent_audio_hash) {
+    return { ok: false, error: "metadata.lineage.parent_audio_hash does not match the referenced ledger event" };
+  }
+
+  if (parentEvent.proof_type !== metadata.lineage.source_proof_type) {
+    return { ok: false, error: "metadata.lineage.source_proof_type does not match the referenced ledger event" };
+  }
+
+  return {
+    ok: true,
+    parentEvent
+  };
+}
+
 function mapBatchPublication(batch) {
   if (!batch) {
     return null;
@@ -240,14 +367,433 @@ function mapBatchPublication(batch) {
   };
 }
 
+class IdentitySessionStore {
+  #challenges = new Map();
+  #usedNonces = new Set();
+  #usedSessionIds = new Set();
+  #filePath;
+
+  constructor(options = {}) {
+    this.#filePath = options.filePath ?? null;
+
+    if (this.#filePath) {
+      this.#loadFromDisk();
+    }
+  }
+
+  #loadFromDisk() {
+    if (!fs.existsSync(this.#filePath)) {
+      return;
+    }
+
+    const payload = JSON.parse(fs.readFileSync(this.#filePath, "utf8"));
+    const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+    const usedNonces = Array.isArray(payload?.used_nonces) ? payload.used_nonces : [];
+    const usedSessionIds = Array.isArray(payload?.used_session_ids) ? payload.used_session_ids : [];
+
+    this.#challenges = new Map(
+      sessions
+        .filter((session) => session && typeof session.session_id === "string" && session.session_id.length > 0)
+        .map((session) => [session.session_id, session])
+    );
+    this.#usedNonces = new Set(
+      usedNonces.filter((nonce) => typeof nonce === "string" && nonce.length > 0)
+    );
+    this.#usedSessionIds = new Set(
+      usedSessionIds.filter((sessionId) => typeof sessionId === "string" && sessionId.length > 0)
+    );
+  }
+
+  #persistToDisk() {
+    if (!this.#filePath) {
+      return;
+    }
+
+    fs.mkdirSync(path.dirname(this.#filePath), { recursive: true });
+    fs.writeFileSync(this.#filePath, JSON.stringify({
+      version: 1,
+      sessions: Array.from(this.#challenges.values()),
+      used_nonces: Array.from(this.#usedNonces.values()),
+      used_session_ids: Array.from(this.#usedSessionIds.values())
+    }, null, 2), "utf8");
+  }
+
+  issue({ verifierOrigin, sessionScope, ttlSeconds, sessionPublicKey, nowTimestamp }) {
+    const expiresAt = nowTimestamp + ttlSeconds;
+    const challenge = createSessionChallenge({
+      verifierOrigin,
+      expiresAt,
+      sessionScope,
+      sessionPublicKey
+    });
+
+    this.#challenges.set(challenge.session_id, {
+      ...challenge,
+      status: "PENDING",
+      created_at: nowTimestamp,
+      redeemed_at: null,
+      consumed_at: null,
+      identity: null
+    });
+    this.#persistToDisk();
+
+    return challenge;
+  }
+
+  get(sessionId) {
+    return this.#challenges.get(sessionId) ?? null;
+  }
+
+  redeem(identity, { nowTimestamp, trustedVerifierOrigins, verifyDeviceAttestation }) {
+    const sessionId = identity?.session_id;
+    const challenge = this.get(sessionId);
+
+    if (!challenge) {
+      return { ok: false, error: "identity_session_not_found" };
+    }
+
+    if (challenge.status !== "PENDING") {
+      return { ok: false, error: "identity_session_not_pending" };
+    }
+
+    if (nowTimestamp > challenge.session_expires_at) {
+      challenge.status = "EXPIRED";
+      this.#persistToDisk();
+      return { ok: false, error: "identity_session_expired" };
+    }
+
+    if (this.#usedSessionIds.has(sessionId)) {
+      return { ok: false, error: "identity_session_replayed" };
+    }
+
+    if (this.#usedNonces.has(challenge.nonce)) {
+      return { ok: false, error: "identity_nonce_replayed" };
+    }
+
+    const verification = verifyIdentityAssertion(identity, {
+      nowTimestamp,
+      trustedVerifierOrigins,
+      expectedSessionId: challenge.session_id,
+      expectedNonce: challenge.nonce,
+      expectedSessionPublicKey: challenge.session_public_key,
+      verifyDeviceAttestation
+    });
+
+    if (!verification.ok) {
+      return { ok: false, error: verification.reason, details: verification.details };
+    }
+
+    this.#usedSessionIds.add(sessionId);
+    this.#usedNonces.add(challenge.nonce);
+    challenge.status = "AUTHORIZED";
+    challenge.redeemed_at = nowTimestamp;
+    challenge.identity = identity;
+    this.#persistToDisk();
+
+    return {
+      ok: true,
+      session: challenge
+    };
+  }
+
+  consume(sessionId, { nowTimestamp }) {
+    const challenge = this.get(sessionId);
+
+    if (!challenge) {
+      return { ok: false, error: "identity_session_not_found" };
+    }
+
+    if (challenge.status !== "AUTHORIZED") {
+      return { ok: false, error: "identity_session_not_consumable" };
+    }
+
+    if (nowTimestamp > challenge.session_expires_at) {
+      challenge.status = "EXPIRED";
+      this.#persistToDisk();
+      return { ok: false, error: "identity_session_expired" };
+    }
+
+    challenge.status = "CONSUMED";
+    challenge.consumed_at = nowTimestamp;
+    this.#persistToDisk();
+
+    return {
+      ok: true,
+      session: challenge
+    };
+  }
+
+  authorize(identity, { requiredScope, nowTimestamp }) {
+    const sessionId = identity?.session_id;
+    const challenge = this.get(sessionId);
+
+    if (!challenge) {
+      return { ok: false, error: "identity_session_not_found" };
+    }
+
+    if (challenge.status === "CONSUMED") {
+      return { ok: false, error: "identity_session_consumed" };
+    }
+
+    if (challenge.status !== "AUTHORIZED") {
+      return { ok: false, error: "identity_session_not_authorized" };
+    }
+
+    if (nowTimestamp > challenge.session_expires_at) {
+      challenge.status = "EXPIRED";
+      this.#persistToDisk();
+      return { ok: false, error: "identity_session_expired" };
+    }
+
+    if (!Array.isArray(challenge.session_scope) || !challenge.session_scope.includes(requiredScope)) {
+      return { ok: false, error: "identity_session_scope_invalid" };
+    }
+
+    if (getCanonicalIdentityString(challenge.identity) !== getCanonicalIdentityString(identity)) {
+      return { ok: false, error: "identity_session_mismatch" };
+    }
+
+    return this.consume(sessionId, { nowTimestamp });
+  }
+}
+
+function loadTrustedTimestampAuthoritiesFromFile(filePath) {
+  if (!filePath) {
+    return {
+      trustedTimestampAuthorities: [],
+      trustPolicy: null
+    };
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`trustedTimestampAuthoritiesFilePath does not exist: ${filePath}`);
+  }
+
+  const payload = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  const authorities = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.trusted_timestamp_authorities)
+      ? payload.trusted_timestamp_authorities
+      : Array.isArray(payload?.authorities)
+        ? payload.authorities
+      : null;
+
+  if (!authorities) {
+    throw new TypeError("trustedTimestampAuthoritiesFilePath must contain an array or trusted_timestamp_authorities array.");
+  }
+
+  const normalizedAuthorities = normalizeTrustedTimestampAuthorities(authorities);
+  const trustPolicy = buildTimestampTrustPolicy({
+    version: payload?.version ?? 1,
+    effectiveAt: payload?.effective_at ?? null,
+    profileId: payload?.profile_id ?? null,
+    profileName: payload?.profile_name ?? null,
+    source: filePath,
+    authorities: normalizedAuthorities,
+    validationProfile: sortObject(payload?.validation_profile ?? null)
+  });
+
+  return {
+    trustedTimestampAuthorities: normalizedAuthorities,
+    trustPolicy
+  };
+}
+
+function loadTrustedTimestampAuthoritiesFromCatalog(filePath, profileId) {
+  if (!filePath) {
+    return {
+      trustedTimestampAuthorities: [],
+      trustPolicy: null,
+      availableProfiles: []
+    };
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`trustedTimestampAuthoritiesCatalogFilePath does not exist: ${filePath}`);
+  }
+
+  const payload = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  const profiles = Array.isArray(payload?.profiles) ? payload.profiles : null;
+
+  if (!profiles || profiles.length === 0) {
+    throw new TypeError("trustedTimestampAuthoritiesCatalogFilePath must contain a non-empty profiles array.");
+  }
+
+  const availableProfiles = profiles.map((profile) => ({
+    profile_id: profile?.profile_id ?? null,
+    profile_name: profile?.profile_name ?? null,
+    version: profile?.version ?? 1,
+    effective_at: profile?.effective_at ?? null
+  }));
+
+  if (typeof profileId !== "string" || profileId.length === 0) {
+    throw new TypeError("timestampTrustProfileId is required when using trustedTimestampAuthoritiesCatalogFilePath.");
+  }
+
+  const profile = profiles.find((entry) => entry?.profile_id === profileId);
+
+  if (!profile) {
+    throw new Error(`timestamp trust profile not found in catalog: ${profileId}`);
+  }
+
+  const authorities = Array.isArray(profile?.trusted_timestamp_authorities)
+    ? profile.trusted_timestamp_authorities
+    : Array.isArray(profile?.authorities)
+      ? profile.authorities
+      : null;
+
+  if (!authorities) {
+    throw new TypeError("selected timestamp trust profile must contain trusted_timestamp_authorities or authorities.");
+  }
+
+  const normalizedAuthorities = normalizeTrustedTimestampAuthorities(authorities);
+  const trustPolicy = buildTimestampTrustPolicy({
+    version: profile?.version ?? 1,
+    effectiveAt: profile?.effective_at ?? null,
+    profileId: profile.profile_id ?? null,
+    profileName: profile.profile_name ?? null,
+    source: `${filePath}#${profile.profile_id}`,
+    authorities: normalizedAuthorities,
+    validationProfile: sortObject(profile?.validation_profile ?? null)
+  });
+
+  return {
+    trustedTimestampAuthorities: normalizedAuthorities,
+    trustPolicy,
+    availableProfiles
+  };
+}
+
+function normalizeTrustedTimestampAuthorities(authorities) {
+  if (!Array.isArray(authorities)) {
+    return [];
+  }
+
+  return authorities.map((authority) => {
+    if (typeof authority === "string") {
+      return { tsa: authority };
+    }
+
+    if (!authority || typeof authority !== "object" || Array.isArray(authority)) {
+      throw new TypeError("trusted timestamp authority entries must be strings or JSON objects.");
+    }
+
+    return { ...authority };
+  });
+}
+
+function buildTimestampValidationProfile(options = {}) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    return null;
+  }
+
+  const profile = sortObject({
+    adapter: "openssl-ts-verify",
+    token_in: options.tokenIn === true,
+    attime: Number.isInteger(options.attime) ? options.attime : null,
+    purpose: typeof options.purpose === "string" && options.purpose.length > 0 ? options.purpose : null,
+    verify_name: typeof options.verifyName === "string" && options.verifyName.length > 0 ? options.verifyName : null,
+    verify_depth: Number.isInteger(options.verifyDepth) ? options.verifyDepth : null,
+    auth_level: Number.isInteger(options.authLevel) ? options.authLevel : null,
+    policy: typeof options.policy === "string" && options.policy.length > 0 ? options.policy : null,
+    crl_check: options.crlCheck === true,
+    crl_check_all: options.crlCheckAll === true,
+    use_deltas: options.useDeltas === true,
+    extended_crl: options.extendedCrl === true,
+    policy_check: options.policyCheck === true,
+    explicit_policy: options.explicitPolicy === true,
+    inhibit_any: options.inhibitAny === true,
+    inhibit_map: options.inhibitMap === true,
+    x509_strict: options.x509Strict === true,
+    partial_chain: options.partialChain === true,
+    check_ss_sig: options.checkSsSig === true,
+    no_check_time: options.noCheckTime === true,
+    verify_args: buildOpenSslTimestampVerifyArgs(options)
+  });
+
+  const hasMeaningfulFields = Object.values(profile).some((value) => {
+    if (value === null || value === false) {
+      return false;
+    }
+
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+
+    return true;
+  });
+
+  return hasMeaningfulFields ? profile : null;
+}
+
+function buildTimestampTrustPolicy({
+  version = 1,
+  effectiveAt = null,
+  profileId = null,
+  profileName = null,
+  source = null,
+  authorities = [],
+  validationProfile = null
+}) {
+  const normalizedAuthorities = normalizeTrustedTimestampAuthorities(authorities)
+    .map((authority) => sortObject(authority))
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const canonicalPolicy = sortObject({
+    profile_id: profileId,
+    profile_name: profileName,
+    version,
+    effective_at: effectiveAt,
+    authorities: normalizedAuthorities,
+    validation_profile: validationProfile
+  });
+  const policyDigest = `0x${crypto.createHash("sha256").update(JSON.stringify(canonicalPolicy)).digest("hex")}`;
+
+  return {
+    profile_id: profileId,
+    profile_name: profileName,
+    version,
+    effective_at: effectiveAt,
+    source,
+    policy_digest: policyDigest,
+    authority_count: normalizedAuthorities.length,
+    validation_profile: validationProfile
+  };
+}
+
+function sortObject(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortObject(entry));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sortObject(value[key])])
+    );
+  }
+
+  return value;
+}
+
 export function createServer(options = {}) {
   const maxRequestBytes = Math.max(1024, Number(options.maxRequestBytes ?? 8 * 1024 * 1024));
   const maxAudioBytes = Math.max(1024, Number(options.maxAudioBytes ?? 8 * 1024 * 1024));
   const verifySecurity = {
     enforceFreshness: options.verifyEnforceFreshness ?? true,
     maxTimestampSkewSeconds: Number(options.verifyMaxTimestampSkewSeconds ?? 24 * 60 * 60),
-    trackNonce: options.verifyTrackNonce ?? false
+    trackNonce: options.verifyTrackNonce ?? true
   };
+  const verifyRequireIdentity = options.verifyRequireIdentity ?? false;
+  const registerRequireAuthorizedIdentitySession = options.registerRequireAuthorizedIdentitySession ?? false;
+  const verifyProfile = options.verifyProfile ?? "strict";
+  const parsedRequiredComplianceLevel = parseComplianceLevel(options.verifyRequiredComplianceLevel ?? 1, { required: true });
+
+  if (!parsedRequiredComplianceLevel.ok) {
+    throw new TypeError(`Invalid verifyRequiredComplianceLevel: ${parsedRequiredComplianceLevel.error}`);
+  }
+
+  const requiredComplianceLevel = parsedRequiredComplianceLevel.level;
   const watermarkEngine = options.watermarkEngine ?? createWatermarkEngine();
   const ledger = options.ledger ?? createLedger({
     filePath: options.ledgerFilePath,
@@ -277,9 +823,64 @@ export function createServer(options = {}) {
   const perfProfiler = options.perfProfiler ?? createPerfProfiler();
   const scheduler = options.scheduler ?? createBatchScheduler(ledger, options.schedulerConfig);
   const nonceTracker = options.nonceTracker
-    ?? (verifySecurity.trackNonce ? createNonceReplayTracker() : null);
+    ?? (verifySecurity.trackNonce ? createNonceReplayTracker({
+      filePath: options.nonceReplayStoreFilePath ?? null
+    }) : null);
   const schedulerConcurrency = Math.max(1, Number(options.schedulerConcurrency ?? 1) || 1);
   const schedulerAutoStart = options.schedulerAutoStart ?? true;
+  const identitySessionStore = options.identitySessionStore ?? new IdentitySessionStore({
+    filePath: options.identitySessionStoreFilePath ?? null
+  });
+  const revocationRegistry = options.revocationRegistry ?? createRevocationRegistry({
+    filePath: options.revocationRegistryFilePath ?? null
+  });
+  const trustedTimestampAuthorityConfig = options.trustedTimestampAuthoritiesCatalogFilePath
+    ? loadTrustedTimestampAuthoritiesFromCatalog(
+      options.trustedTimestampAuthoritiesCatalogFilePath,
+      options.timestampTrustProfileId ?? null
+    )
+    : Array.isArray(options.trustedTimestampAuthorities)
+    ? {
+      trustedTimestampAuthorities: normalizeTrustedTimestampAuthorities(options.trustedTimestampAuthorities),
+      trustPolicy: buildTimestampTrustPolicy({
+        version: 1,
+        effectiveAt: null,
+        profileId: options.timestampTrustProfileId ?? "inline-default",
+        profileName: options.timestampTrustProfileName ?? "Inline TSA Trust Policy",
+        source: "inline",
+        authorities: options.trustedTimestampAuthorities,
+        validationProfile: buildTimestampValidationProfile(options.openSslTimestampOptions ?? null)
+      }),
+      availableProfiles: []
+    }
+    : {
+      ...loadTrustedTimestampAuthoritiesFromFile(options.trustedTimestampAuthoritiesFilePath ?? null),
+      availableProfiles: []
+    };
+  const trustedTimestampAuthorities = trustedTimestampAuthorityConfig.trustedTimestampAuthorities;
+  const timestampTrustPolicy = trustedTimestampAuthorityConfig.trustPolicy;
+  const availableTimestampTrustProfiles = trustedTimestampAuthorityConfig.availableProfiles ?? [];
+  const timestampAttestationVerifier = options.verifyTimestampAttestation
+    ?? ((attestation, context) => {
+      if (attestation?.type !== "RFC3161") {
+        return { ok: false, reason: "unsupported timestamp attestation type" };
+      }
+
+      return verifyRfc3161TimestampAttestation(attestation, {
+        ...context,
+        trustedAuthorities: trustedTimestampAuthorities
+      });
+    });
+  const rfc3161TokenParser = typeof options.parseRfc3161Token === "function"
+    ? options.parseRfc3161Token
+    : options.openSslTimestampOptions
+      ? ((token, context) => parseRfc3161TokenWithOpenSsl(token, {
+        ...context,
+        openSslOptions: options.openSslTimestampOptions
+      }))
+    : null;
+  const identityChallengeTtlSeconds = Math.max(30, Number(options.identityChallengeTtlSeconds ?? 300) || 300);
+  const trustedVerifierOrigins = options.trustedVerifierOrigins ?? [];
   let schedulerStarted = false;
 
   function ensureSchedulerStarted() {
@@ -294,6 +895,191 @@ export function createServer(options = {}) {
   }
   const defaultVerificationEndpoint = options.verificationEndpoint ?? "http://localhost:8787/verify-proof";
   const requireAuth = options.requireAuth ?? false;
+
+  async function handleRegistration(body, response, keyData, {
+    proofType,
+    requiredScope = null,
+    defaultComplianceLevel = null,
+    requireExportLineage = false
+  }) {
+    ensureSchedulerStarted();
+    if (keyData && !apiKeyManager.canPerform(keyData.role, "register")) {
+      return sendJson(response, 403, { error: "Insufficient permissions" });
+    }
+    if (keyData && !apiKeyManager.checkQuota(keyData.orgId).allowed) {
+      return sendJson(response, 429, { error: "Quota exceeded", retryAfter: 3600 });
+    }
+
+    const audio = Buffer.from(body.audioBase64 ?? "", "base64");
+
+    if (audio.length === 0) {
+      return sendJson(response, 400, { error: "audioBase64 is required" });
+    }
+
+    if (audio.length > maxAudioBytes) {
+      return sendJson(response, 413, { error: "audio_too_large", max_bytes: maxAudioBytes });
+    }
+
+    if (body.metadata != null && !isJsonObject(body.metadata)) {
+      return sendJson(response, 400, { error: "metadata must be a JSON object" });
+    }
+
+    if (requireExportLineage) {
+      const lineageValidation = await validateExportLineageAgainstLedger(body.metadata ?? null, ledger);
+
+      if (!lineageValidation.ok) {
+        return sendJson(response, 400, { error: lineageValidation.error });
+      }
+    }
+
+    const parsedComplianceLevel = parseComplianceLevel(body.complianceLevel ?? defaultComplianceLevel, { required: true });
+
+    if (!parsedComplianceLevel.ok) {
+      return sendJson(response, 400, { error: parsedComplianceLevel.error });
+    }
+
+    const complianceLevel = parsedComplianceLevel.level;
+    const includeWatermark = body.includeWatermark
+      ?? (proofType === PROOF_TYPES.GENERATED && complianceLevel >= 2);
+    const registrationTimestamp = Number.isInteger(body.timestamp)
+      ? body.timestamp
+      : Math.floor(Date.now() / 1000);
+    const usageEventId = complianceLevel >= 3
+      ? (typeof body.usageEventId === "string" && body.usageEventId.length > 0 ? body.usageEventId : `evt_${crypto.randomUUID()}`)
+      : null;
+
+    if (includeWatermark && complianceLevel === 1) {
+      return sendJson(response, 400, { error: "Level 1 proofs MUST NOT include watermark fields." });
+    }
+
+    if (complianceLevel >= 3 && body.anchorNow !== true) {
+      return sendJson(response, 400, {
+        error: "Level 3 registration requires anchorNow=true to obtain a deterministic ledger anchor"
+      });
+    }
+
+    if (complianceLevel >= 3 && body.timestampAttestation == null && body.timestampToken == null) {
+      return sendJson(response, 400, {
+        error: "timestampAttestation or timestampToken is required for Level 3 registration"
+      });
+    }
+
+    if (registerRequireAuthorizedIdentitySession && requiredScope) {
+      if (!isJsonObject(body.identity)) {
+        return sendJson(response, 400, { error: "identity is required for authorized-session registration" });
+      }
+
+      const nowTimestamp = Math.floor(Date.now() / 1000);
+      const authorizationResult = identitySessionStore.authorize(body.identity, {
+        requiredScope,
+        nowTimestamp
+      });
+
+      if (!authorizationResult.ok) {
+        return sendJson(response, 400, { error: authorizationResult.error });
+      }
+    }
+
+    if (keyData) {
+      apiKeyManager.consumeQuota(keyData.orgId);
+    }
+
+    let preparedAudio = audio;
+    let watermark = null;
+
+    if (includeWatermark) {
+      const stopWatermarkEmbed = perfProfiler.start("dsp.watermark.embed_ms");
+      const watermarked = await watermarkEngine.embed(audio, { payload: body.watermarkPayload });
+      stopWatermarkEmbed();
+      preparedAudio = watermarked.audio;
+      watermark = watermarked.watermark;
+    }
+
+    const stopRegisterVoice = perfProfiler.start("dsp.register_voice_ms");
+    const registration = await registerVoice(preparedAudio, {
+      proofType,
+      complianceLevel,
+      includeWatermark,
+      requireIdentity: body.requireIdentity ?? false,
+      identity: body.identity ?? null,
+      registry: body.registry,
+      metadata: body.metadata ?? {},
+      timestamp: registrationTimestamp,
+      nonce: body.nonce,
+      usageEventId,
+      timestampAttestation: null,
+      verificationEndpoint: body.verificationEndpoint ?? defaultVerificationEndpoint,
+      keyManager
+    });
+    stopRegisterVoice();
+
+    if (complianceLevel >= 3) {
+      const attestationSource = body.timestampToken ?? body.timestampAttestation;
+      const expectedDigest = getTimestampAttestationReceiptDigest(registration.proofPackage);
+      const normalizedAttestation = normalizeRfc3161TimestampAttestation(attestationSource, {
+        expectedDigest,
+        trustedAuthorities: trustedTimestampAuthorities,
+        parseRfc3161Token: rfc3161TokenParser
+      });
+
+      if (!normalizedAttestation.ok) {
+        return sendJson(response, 400, {
+          error: normalizedAttestation.reason
+        });
+      }
+
+      const attestationVerification = timestampAttestationVerifier(normalizedAttestation.attestation, {
+        proofPackage: registration.proofPackage,
+        expectedDigest
+      });
+
+      if (!attestationVerification || attestationVerification.ok !== true) {
+        return sendJson(response, 400, {
+          error: attestationVerification?.reason ?? "timestamp attestation verification failed"
+        });
+      }
+
+      registration.proofPackage.timestamp_attestation = normalizedAttestation.attestation;
+    }
+
+    const stopLedgerAppend = perfProfiler.start("ledger.append_usage_event_ms");
+    const ledgerEvent = await ledger.appendUsageEvent(registration.proofPackage, {
+      provider: body.provider ?? body.metadata?.provider ?? "local",
+      model: body.model ?? body.metadata?.model_id ?? "unknown",
+      anchorNow: body.anchorNow ?? false
+    });
+    stopLedgerAppend();
+    const ledgerBatch = ledgerEvent.ledger_batch_id
+      ? await ledger.getBatch(ledgerEvent.ledger_batch_id)
+      : null;
+
+    if (complianceLevel >= 3) {
+      if (!ledgerEvent.event_id || !ledgerEvent.ledger_anchor) {
+        return sendJson(response, 500, {
+          error: "level3_ledger_anchor_missing"
+        });
+      }
+
+      registration.proofPackage.usage_event_id = ledgerEvent.event_id;
+      registration.proofPackage.ledger_anchor = ledgerEvent.ledger_anchor;
+    }
+
+    auditLog.info(EVENT_TYPES.VOICE_REGISTERED, "Voice registered", {
+      voiceId: registration.voiceId,
+      audioHash: registration.audioHash,
+      proofType: registration.proofType,
+      complianceLevel: registration.complianceLevel,
+      metadata: body.metadata
+    });
+
+    return sendJson(response, 200, {
+      ...registration,
+      proof_package: registration.proofPackage,
+      ledger_event: ledgerEvent,
+      batch_publication: mapBatchPublication(ledgerBatch),
+      watermark
+    });
+  }
 
   // Extract and validate API key from Authorization header
   function validateRequest(request) {
@@ -327,6 +1113,101 @@ export function createServer(options = {}) {
 
       if (request.method === "GET" && request.url === "/health") {
         return sendJson(response, 200, { status: "ok", service: "vri-api" });
+      }
+
+      if (request.method === "GET" && request.url === "/trust/timestamp-authorities") {
+        return sendJson(response, 200, {
+          trusted_timestamp_authorities: trustedTimestampAuthorities,
+          count: trustedTimestampAuthorities.length,
+          trust_policy: timestampTrustPolicy
+        });
+      }
+
+      if (request.method === "GET" && request.url === "/trust/timestamp-policy") {
+        return sendJson(response, 200, {
+          trust_policy: timestampTrustPolicy
+        });
+      }
+
+      if (request.method === "GET" && request.url === "/trust/timestamp-profiles") {
+        return sendJson(response, 200, {
+          profiles: availableTimestampTrustProfiles,
+          count: availableTimestampTrustProfiles.length,
+          active_profile_id: timestampTrustPolicy?.profile_id ?? null
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/identity/challenges") {
+        const body = await readJson(request, maxRequestBytes);
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+
+        if (typeof body.verifierOrigin !== "string" || body.verifierOrigin.length === 0) {
+          return sendJson(response, 400, { error: "verifierOrigin is required" });
+        }
+
+        const parsedSessionScope = parseSessionScopeList(body.sessionScope);
+
+        if (!parsedSessionScope.ok) {
+          return sendJson(response, 400, { error: parsedSessionScope.error });
+        }
+
+        if (typeof body.sessionPublicKey !== "string" || body.sessionPublicKey.length === 0) {
+          return sendJson(response, 400, { error: "sessionPublicKey is required" });
+        }
+
+        const challenge = identitySessionStore.issue({
+          verifierOrigin: body.verifierOrigin,
+          sessionScope: parsedSessionScope.scopes,
+          ttlSeconds: Math.max(30, Number(body.ttlSeconds ?? identityChallengeTtlSeconds) || identityChallengeTtlSeconds),
+          sessionPublicKey: body.sessionPublicKey,
+          nowTimestamp
+        });
+
+        return sendJson(response, 201, {
+          challenge,
+          qr_payload: challenge,
+          status: "PENDING"
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/identity/redeem") {
+        const body = await readJson(request, maxRequestBytes);
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+
+        if (!isJsonObject(body.identity)) {
+          return sendJson(response, 400, { error: "identity is required" });
+        }
+
+        const redeemed = identitySessionStore.redeem(body.identity, {
+          nowTimestamp,
+          trustedVerifierOrigins,
+          verifyDeviceAttestation: options.verifyDeviceAttestation
+        });
+
+        if (!redeemed.ok) {
+          return sendJson(response, 400, {
+            error: redeemed.error,
+            details: redeemed.details ?? null
+          });
+        }
+
+        return sendJson(response, 200, {
+          status: redeemed.session.status,
+          session_id: redeemed.session.session_id,
+          redeemed_at: redeemed.session.redeemed_at,
+          identity: redeemed.session.identity
+        });
+      }
+
+      if (request.method === "GET" && request.url.startsWith("/identity/sessions/")) {
+        const sessionId = decodeURIComponent(request.url.slice("/identity/sessions/".length));
+        const session = identitySessionStore.get(sessionId);
+
+        if (!session) {
+          return sendJson(response, 404, { error: "identity_session_not_found" });
+        }
+
+        return sendJson(response, 200, session);
       }
 
       if (request.method === "GET" && request.url === "/ledger/status") {
@@ -378,6 +1259,44 @@ export function createServer(options = {}) {
         return sendJson(response, 200, { keys, count: keys.length });
       }
 
+      if (request.method === "POST" && request.url === "/key-revocations") {
+        if (!keyData || !apiKeyManager.canPerform(keyData.role, "admin")) {
+          return sendJson(response, 403, { error: "Insufficient permissions" });
+        }
+
+        const body = await readJson(request, maxRequestBytes);
+
+        if (typeof body.keyId !== "string" || body.keyId.length === 0) {
+          return sendJson(response, 400, { error: "keyId is required" });
+        }
+
+        if (!Number.isInteger(body.effectiveAt) || body.effectiveAt < 0) {
+          return sendJson(response, 400, { error: "effectiveAt must be a non-negative integer" });
+        }
+
+        const record = revocationRegistry.revoke({
+          keyId: body.keyId,
+          creatorId: body.creatorId ?? null,
+          publicKey: body.publicKey ?? null,
+          effectiveAt: body.effectiveAt,
+          reason: body.reason ?? null,
+          recordedAt: body.recordedAt ?? null
+        });
+
+        return sendJson(response, 201, record);
+      }
+
+      if (request.method === "GET" && request.url.startsWith("/key-revocations/")) {
+        const keyId = decodeURIComponent(request.url.slice("/key-revocations/".length));
+        const record = revocationRegistry.get(keyId);
+
+        if (!record) {
+          return sendJson(response, 404, { error: "key_revocation_not_found" });
+        }
+
+        return sendJson(response, 200, record);
+      }
+
       if (request.method === "GET" && request.url === "/organizations/me") {
         if (!keyData) {
           return sendJson(response, 401, { error: "Requires API key" });
@@ -387,73 +1306,36 @@ export function createServer(options = {}) {
       }
 
       if (request.method === "POST" && request.url === "/register") {
-        ensureSchedulerStarted();
-        if (keyData && !apiKeyManager.canPerform(keyData.role, "register")) {
-          return sendJson(response, 403, { error: "Insufficient permissions" });
-        }
-        if (keyData && !apiKeyManager.checkQuota(keyData.orgId).allowed) {
-          return sendJson(response, 429, { error: "Quota exceeded", retryAfter: 3600 });
-        }
         const body = await readJson(request, maxRequestBytes);
-        const audio = Buffer.from(body.audioBase64 ?? "", "base64");
-
-        if (audio.length === 0) {
-          return sendJson(response, 400, { error: "audioBase64 is required" });
-        }
-
-        if (audio.length > maxAudioBytes) {
-          return sendJson(response, 413, { error: "audio_too_large", max_bytes: maxAudioBytes });
-        }
-
-        if (body.metadata != null && !isJsonObject(body.metadata)) {
-          return sendJson(response, 400, { error: "metadata must be a JSON object" });
-        }
-
-        if (keyData) {
-          apiKeyManager.consumeQuota(keyData.orgId);
-        }
-
-        const stopWatermarkEmbed = perfProfiler.start("dsp.watermark.embed_ms");
-        const watermarked = await watermarkEngine.embed(audio, { payload: body.watermarkPayload });
-        stopWatermarkEmbed();
-
-        const stopRegisterVoice = perfProfiler.start("dsp.register_voice_ms");
-        const registration = await registerVoice(watermarked.audio, {
-          registry: body.registry,
-          metadata: body.metadata ?? {},
-          verificationEndpoint: body.verificationEndpoint ?? defaultVerificationEndpoint,
-          keyManager
+        return handleRegistration(body, response, keyData, {
+          proofType: PROOF_TYPES.GENERATED,
+          requiredScope: registerRequireAuthorizedIdentitySession ? SESSION_SCOPES.GENERATION : null,
+          defaultComplianceLevel: 2
         });
-        stopRegisterVoice();
+      }
 
-        const stopLedgerAppend = perfProfiler.start("ledger.append_usage_event_ms");
-        const ledgerEvent = await ledger.appendUsageEvent(registration.proofPackage, {
-          provider: body.provider ?? body.metadata?.provider ?? "local",
-          model: body.model ?? body.metadata?.model_id ?? "unknown",
-          anchorNow: body.anchorNow ?? false
+      if (request.method === "POST" && request.url === "/register-recorded") {
+        const body = await readJson(request, maxRequestBytes);
+        return handleRegistration(body, response, keyData, {
+          proofType: PROOF_TYPES.RECORDED,
+          requiredScope: registerRequireAuthorizedIdentitySession ? SESSION_SCOPES.RECORDING : null,
+          defaultComplianceLevel: 1
         });
-        stopLedgerAppend();
-        const ledgerBatch = ledgerEvent.ledger_batch_id
-          ? await ledger.getBatch(ledgerEvent.ledger_batch_id)
-          : null;
-        registration.complianceLevel = ledgerEvent.ledger_anchor ? 3 : 2;
-        registration.proofPackage.compliance_level = ledgerEvent.ledger_anchor ? 3 : 2;
-        registration.proofPackage.usage_event_id = ledgerEvent.event_id;
-        registration.proofPackage.ledger_anchor = ledgerEvent.ledger_anchor;
+      }
 
-        auditLog.info(EVENT_TYPES.VOICE_REGISTERED, "Voice registered", {
-          voiceId: registration.voiceId,
-          audioHash: registration.audioHash,
-          complianceLevel: registration.complianceLevel,
-          metadata: body.metadata
-        });
+      if (request.method === "POST" && request.url === "/register-export") {
+        const body = await readJson(request, maxRequestBytes);
+        const parsedProofType = parseProofType(body.proofType, { required: true });
 
-        return sendJson(response, 200, {
-          ...registration,
-          proof_package: registration.proofPackage,
-          ledger_event: ledgerEvent,
-          batch_publication: mapBatchPublication(ledgerBatch),
-          watermark: watermarked.watermark
+        if (!parsedProofType.ok) {
+          return sendJson(response, 400, { error: parsedProofType.error });
+        }
+
+        return handleRegistration(body, response, keyData, {
+          proofType: parsedProofType.proofType,
+          requiredScope: registerRequireAuthorizedIdentitySession ? SESSION_SCOPES.EXPORT : null,
+          defaultComplianceLevel: parsedProofType.proofType === PROOF_TYPES.GENERATED ? 2 : 1,
+          requireExportLineage: true
         });
       }
 
@@ -479,6 +1361,19 @@ export function createServer(options = {}) {
         if (audio.length === 0 || !body.proofPackage) {
           return sendJson(response, 400, { error: "audioBase64 and proofPackage are required" });
         }
+
+        const parsedComplianceLevel = parseComplianceLevel(body.proofPackage?.compliance_level, {
+          required: verifyProfile === "strict"
+        });
+
+        if (!parsedComplianceLevel.ok) {
+          return sendJson(response, 400, {
+            error: "invalid_compliance_level",
+            message: parsedComplianceLevel.error
+          });
+        }
+
+        const policyComplianceLevel = requiredComplianceLevel;
 
         if (audio.length > maxAudioBytes) {
           return sendJson(response, 413, { error: "audio_too_large", max_bytes: maxAudioBytes });
@@ -510,23 +1405,94 @@ export function createServer(options = {}) {
           enforceFreshness: verifySecurity.enforceFreshness,
           maxTimestampSkewSeconds: verifySecurity.maxTimestampSkewSeconds,
           nonceTracker,
+          requireIdentity: verifyRequireIdentity,
+          trustedVerifierOrigins: options.trustedVerifierOrigins ?? null,
+          expectedSessionPublicKey: body.expectedSessionPublicKey ?? null,
+          expectedSessionId: body.expectedSessionId ?? null,
+          expectedIdentityNonce: body.expectedIdentityNonce ?? null,
+          verifyDeviceAttestation: options.verifyDeviceAttestation,
+          getKeyRevocationStatus: ({ keyId }) => keyId ? revocationRegistry.get(keyId) : null,
+          verifyTimestampAttestation: timestampAttestationVerifier,
+          claimedComplianceLevel: parsedComplianceLevel.level,
+          requiredComplianceLevel,
+          watermarkRequiredAtOrAbove: 2,
+          requireWatermarkCheck: policyComplianceLevel >= 2,
           watermarkStatus
         });
-        const ledgerVerification = await ledger.verifyProofPackage(body.proofPackage);
-
-        const trustLevel = cryptographicVerification.cryptographic_valid
-          ? (watermarkStatus === "present" ? "HIGH" : "PARTIAL")
-          : "LOW";
+        const ledgerVerification = body.proofPackage?.compliance_level >= 3
+          ? await ledger.verifyProofPackage(body.proofPackage)
+          : {
+            ok: true,
+            reason: "LEDGER_NOT_REQUIRED"
+          };
 
         return sendJson(response, 200, {
           ...cryptographicVerification,
           cryptographic_valid: cryptographicVerification.cryptographic_valid,
-          watermark: watermarkStatus,
+          watermark: cryptographicVerification.watermark,
           identity_valid: cryptographicVerification.identity_valid,
           metadata_consistent: cryptographicVerification.metadata_consistent,
           protocol_valid: cryptographicVerification.protocol_valid,
-          trust_level: trustLevel,
-          ledger: ledgerVerification
+          trust_level: cryptographicVerification.trust_level,
+          ledger: ledgerVerification,
+          trust_policy: body.proofPackage?.compliance_level >= 3 ? timestampTrustPolicy : null
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/verify-timestamp-attestation") {
+        const body = await readJson(request, maxRequestBytes);
+
+        if (!isJsonObject(body.proofPackage)) {
+          return sendJson(response, 400, { error: "proofPackage is required" });
+        }
+
+        if (!isJsonObject(body.timestampAttestation)) {
+          return sendJson(response, 400, { error: "timestampAttestation is required" });
+        }
+
+        const expectedDigest = getTimestampAttestationReceiptDigest(body.proofPackage);
+        const verification = timestampAttestationVerifier(body.timestampAttestation, {
+          proofPackage: body.proofPackage,
+          expectedDigest,
+          receipt: body.proofPackage
+        });
+
+        return sendJson(response, 200, {
+          ok: verification?.ok === true,
+          reason: verification?.ok === true ? "VALID" : (verification?.reason ?? "timestamp attestation verification failed"),
+          expected_digest: expectedDigest,
+          details: verification?.details ?? null,
+          trust_policy: timestampTrustPolicy
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/normalize-timestamp-attestation") {
+        const body = await readJson(request, maxRequestBytes);
+
+        if (!isJsonObject(body.proofPackage)) {
+          return sendJson(response, 400, { error: "proofPackage is required" });
+        }
+
+        const source = body.timestampToken ?? body.timestampAttestation ?? null;
+
+        if (source == null) {
+          return sendJson(response, 400, { error: "timestampToken or timestampAttestation is required" });
+        }
+
+        const expectedDigest = getTimestampAttestationReceiptDigest(body.proofPackage);
+        const normalized = normalizeRfc3161TimestampAttestation(source, {
+          expectedDigest,
+          trustedAuthorities: trustedTimestampAuthorities,
+          parseRfc3161Token: rfc3161TokenParser
+        });
+
+        return sendJson(response, 200, {
+          ok: normalized.ok === true,
+          reason: normalized.ok === true ? "VALID" : normalized.reason,
+          expected_digest: expectedDigest,
+          timestamp_attestation: normalized.attestation ?? null,
+          details: normalized.details ?? null,
+          trust_policy: timestampTrustPolicy
         });
       }
 

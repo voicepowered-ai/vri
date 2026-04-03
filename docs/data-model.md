@@ -4,6 +4,8 @@
 
 VRI uses PostgreSQL for persistent storage with the following core tables:
 
+Core VRI storage covers signing identities, proof events, append-only ledger state, and auditability. Any downstream business workflows are optional product extensions and are not required by the protocol core.
+
 ---
 
 ## Core Tables
@@ -15,7 +17,6 @@ Registered signing identities.
 ```sql
 CREATE TABLE creators (
     creator_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    settlement_address VARCHAR(255),     -- Optional settlement address
     public_key BYTEA NOT NULL UNIQUE,    -- Ed25519, 32 bytes
     public_key_version INT DEFAULT 1,    -- For key rotation
     created_at BIGINT NOT NULL,
@@ -23,14 +24,13 @@ CREATE TABLE creators (
     metadata JSONB,
     verification_status VARCHAR(20),     -- verified, pending, unverified
     
-    INDEX (wallet_address),
     INDEX (verification_status)
 );
 ```
 
 ### usage_events
 
-Verification and usage records (immutable log).
+Verification and evidence records (immutable log).
 
 ```sql
 CREATE TABLE usage_events (
@@ -43,7 +43,6 @@ CREATE TABLE usage_events (
     source_system VARCHAR(50),            -- generation system or verification system
     context JSONB,                        -- {request_id: "...", tenant_id: "...", ...}
     verified BOOLEAN DEFAULT true,
-    accounting_units BIGINT,              -- Optional system-defined accounting quantity
     signature VARCHAR(128),               -- Signed by verification service
     batch_id VARCHAR(64) REFERENCES merkle_batches(batch_id),
     created_at BIGINT NOT NULL,
@@ -77,47 +76,6 @@ CREATE TABLE merkle_batches (
 );
 ```
 
-### wallets
-
-Optional accounting state.
-
-```sql
-CREATE TABLE wallets (
-    creator_id UUID PRIMARY KEY REFERENCES creators(creator_id) ON DELETE CASCADE,
-    balance_usdc BIGINT DEFAULT 0,        -- In cents
-    lifetime_earnings_usdc BIGINT DEFAULT 0,
-    last_settlement BIGINT,               -- Timestamp
-    settlement_address VARCHAR(255),      -- External payment address
-    settlement_method VARCHAR(20),        -- implementation-defined settlement rail
-    pending_settlement BIGINT DEFAULT 0,
-    updated_at BIGINT NOT NULL,
-    
-    INDEX (balance_usdc DESC)
-);
-```
-
-### transactions
-
-Settlement records (history).
-
-```sql
-CREATE TABLE transactions (
-    transaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    creator_id UUID REFERENCES creators(creator_id) ON DELETE RESTRICT,
-    amount_usdc BIGINT NOT NULL,
-    status VARCHAR(20) NOT NULL,          -- pending, completed, failed
-    payment_method VARCHAR(20) NOT NULL,
-    error_message TEXT,
-    external_id VARCHAR(255),             -- External settlement reference
-    created_at BIGINT NOT NULL,
-    completed_at BIGINT,
-    
-    INDEX (creator_id, status),
-    INDEX (created_at DESC),
-    INDEX (status)
-);
-```
-
 ### audit_log
 
 All modifications logged for compliance.
@@ -145,8 +103,6 @@ CREATE TABLE audit_log (
 
 ```
 creators (1) ──────→ (N) usage_events
-              └─────→ (1) wallets
-                      └──→ (N) transactions
 
 usage_events (N) ──────→ (1) merkle_batches
 merkle_batches (1) ──────→ (N) usage_events
@@ -159,21 +115,17 @@ merkle_batches (1) ──────→ (N) usage_events
 ### High-Priority Indexes
 
 ```sql
--- Creator earnings queries
+-- Creator evidence queries
 CREATE INDEX idx_usage_events_creator_timestamp 
   ON usage_events(creator_id, timestamp DESC);
 
--- Platform analytics
-CREATE INDEX idx_usage_events_platform_time 
-  ON usage_events(platform, timestamp DESC);
+-- Source-system analytics
+CREATE INDEX idx_usage_events_source_time 
+  ON usage_events(source_system, timestamp DESC);
 
 -- Ledger integrity checks
 CREATE INDEX idx_usage_events_batch_id 
   ON usage_events(batch_id);
-
--- Wallet balance queries
-CREATE INDEX idx_wallets_balance 
-  ON wallets(balance_usdc DESC);
 ```
 
 ### Partitioning Strategy (Optional)
@@ -186,26 +138,11 @@ CREATE TABLE usage_events_2024_03
   PARTITION OF usage_events
   FOR VALUES FROM ('2024-03-01') TO ('2024-04-01');
 
--- Partition transactions by year
-CREATE TABLE transactions_2024 
-  PARTITION OF transactions
-  FOR VALUES FROM ('2024') TO ('2025');
 ```
 
 ---
 
 ## Data Types
-
-### Monetary Values
-
-All monetary values stored as **BIGINT** (cents, unsigned):
-
-```
-1 USD = 100 cents
-$54.28 = 5428 (stored as integer)
-
-Arithmetic: Always int64, divide by 100 for display
-```
 
 ### Timestamps
 
@@ -242,33 +179,31 @@ Watermark payload:   8 bytes (64 bits)
 
 ## Query Patterns
 
-### Get Creator's Total Earnings
+### Get Creator's Recent Verified Events
 
 ```sql
 SELECT
   c.creator_id,
-  w.lifetime_earnings_usdc / 100.0 as total_earned_usd,
-  w.balance_usdc / 100.0 as current_balance_usd
+  COUNT(ue.event_id) as verified_event_count,
+  MAX(ue.timestamp) as last_verified_timestamp
 FROM creators c
-LEFT JOIN wallets w ON c.creator_id = w.creator_id
+LEFT JOIN usage_events ue ON c.creator_id = ue.creator_id AND ue.verified = true
 WHERE c.creator_id = ?;
 ```
 
-### Total Royalties by Platform (Last 30 Days)
+### Verified Events By Source System (Last 30 Days)
 
 ```sql
 SELECT
-  platform,
-  COUNT(*) as usage_count,
-  SUM(royalty_usdc) / 100.0 as total_royalties_usd,
-  AVG(royalty_usdc) / 100.0 as avg_royalty_usd
+  source_system,
+  COUNT(*) as event_count
 FROM usage_events
 WHERE
   creator_id = ?
   AND timestamp > EXTRACT(EPOCH FROM NOW()) - 30*86400
   AND verified = true
-GROUP BY platform
-ORDER BY total_royalties_usd DESC;
+GROUP BY source_system
+ORDER BY event_count DESC;
 ```
 
 ### Ledger Integrity Verification
@@ -295,7 +230,6 @@ GROUP BY mb.batch_id, mb.event_count;
 Policy:
 
 usage_events:      Retained indefinitely (immutable ledger)
-transactions:      Retained indefinitely (audit trail)
 audit_log:         Retained for 7 years (regulatory compliance)
 
 Backups:
@@ -321,8 +255,8 @@ Backups:
 Usage Event Recording:
 
 1. Write event to usage_events table (WAL enabled)
-2. Increment wallet balance (atomic transaction)
-3. Check event was persisted (READ COMMITTED isolation)
+2. Check event was persisted (READ COMMITTED isolation)
+3. Trigger any downstream systems outside the core transaction boundary
 4. Return event_id to client
 
 Retry logic:
@@ -352,20 +286,17 @@ GROUP BY DATE_TRUNC('hour', TO_TIMESTAMP(timestamp))
 ORDER BY DATE_TRUNC DESC;
 ```
 
-### Pending Settlements
+### Verification Activity Summary
 
 ```sql
 SELECT
-  c.creator_id,
-  w.balance_usdc / 100.0 as pending_usd,
-  COUNT(t.transaction_id) as total_payouts,
-  MAX(t.completed_at) as last_payout_time
-FROM wallets w
-JOIN creators c ON w.creator_id = c.creator_id
-LEFT JOIN transactions t ON c.creator_id = t.creator_id AND t.status = 'completed'
-WHERE w.balance_usdc >= 1000  -- $10 minimum
-GROUP BY c.creator_id, w.balance_usdc
-ORDER BY w.balance_usdc DESC;
+  creator_id,
+  COUNT(*) as recent_events,
+  MAX(timestamp) as last_event_time
+FROM usage_events
+WHERE timestamp > EXTRACT(EPOCH FROM NOW()) - 86400
+GROUP BY creator_id
+ORDER BY recent_events DESC;
 ```
 
 ---

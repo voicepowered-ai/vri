@@ -253,7 +253,7 @@ This document analyzes potential attacks against VRI as an inference-layer trace
 - Generate synthetic usage signals against legitimate services
 
 **Likelihood**: Medium (economically incentivized)  
-**Impact**: Incorrect accounting outcomes
+**Impact**: Incorrect downstream evidence interpretation
 
 **Mitigation**:
 - **Deduplication**: Same audio_hash examined within time window = 1 event, not N
@@ -267,24 +267,24 @@ This document analyzes potential attacks against VRI as an inference-layer trace
 
 #### 5.2 Creator Impersonation
 
-**Threat**: Attacker claims to be legitimate creator and diverts accounting or settlement outcomes.
+**Threat**: Attacker claims to be the legitimate creator and attempts to redirect trust decisions based on false identity.
 
 **Attack Methods**:
 - Register new creator account with similar name
 - Claim watermarked audio as their own
-- Request settlement to an attacker's destination
+- Register fraudulent identity metadata or authorization state
 
 **Likelihood**: Medium (if verification is lax)  
-**Impact**: Creator doesn't receive earnings, attacker profits
+**Impact**: Trust is misassigned to the attacker
 
 **Mitigation**:
 - **Cryptographic proof**: Signature proves creator identity (can't be spoofed)
-- **KYC/Identity verification**: Creators submit government ID before payouts
+- **Identity proofing outside the protocol**: Deployments may bind keys to external identity systems where legally required
 - **Manual review**: Suspicious creators flagged for verification
-- **Settlement destination verification**: Settlement destination must match registered account
-- **Email confirmation**: Settlement requests require email confirmation link
+- **Destination or account controls outside the protocol**: Any downstream business workflow must validate its own recipients
+- **Out-of-band confirmations**: Sensitive account changes should require separate confirmation channels
 
-**Residual Risk**: **Low**. Cryptographic proof prevents spoofing. KYC adds human verification layer.
+**Residual Risk**: **Low**. Cryptographic proof prevents spoofing. External identity controls can further reduce impersonation risk where needed.
 
 ---
 
@@ -292,12 +292,12 @@ This document analyzes potential attacks against VRI as an inference-layer trace
 
 #### 6.1 Fake External Reporting
 
-**Threat**: Attacker claims audio was processed by a legitimate external system in order to influence accounting outcomes.
+**Threat**: Attacker claims audio was processed by a legitimate external system in order to influence downstream trust decisions.
 
 **Attack Methods**:
 - Forge usage context (source, count, location)
 - Pass context to verification endpoint
-- Claim false accounting outcomes
+- Claim false downstream outcomes
 
 **Likelihood**: Medium (economically incentivized)  
 **Impact**: Incorrect accounting outcomes
@@ -384,4 +384,4 @@ If you discover a vulnerability:
 
 ---
 
-**Next**: See companion reference documents for optional accounting and settlement design notes.
+**Next**: See companion reference documents for optional downstream integration notes.

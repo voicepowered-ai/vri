@@ -170,9 +170,9 @@ Typically completes in < 500ms.
 
 ## Usage Accounting
 
-### Does VRI define billing or settlement policy?
+### Does VRI define downstream business policy?
 
-No. VRI permits usage accounting and settlement systems to be layered on top of verified events, but billing policy is external to the protocol.
+No. VRI can feed external business systems with verified events, but those policies are external to the protocol.
 
 ### What can be recorded in a verification or usage event?
 
@@ -220,14 +220,14 @@ This is an asymmetric threat — easier to clone than to detect. VRI provides ev
 
 **Stored**:
 - Creator ID + public key
-- Optional settlement address
+- Optional external integration identifier
 - Usage events (request context, timestamp, verification status)
-- Accounting state and settlement history, if implemented
+- Optional downstream business state, if implemented outside the core
 - Audit logs
 
 **Not stored**:
 - Your voice biometrics (no speaker recognition)
-- Payee personal information (only payment address)
+- External beneficiary personal information unless stored by a separate downstream system
 - Metadata you don't provide
 
 ### Is my data safe?
@@ -351,7 +351,7 @@ Every **10 minutes** (or when batch >10k events), whichever comes first.
 
 Trade-off:
 - **More frequent**: Higher blockchain costs
-- **Less frequent**: Slower finality for royalties
+- **Less frequent**: Slower finality for downstream business or reporting systems
 
 10-minute batches balance cost and speed.
 
@@ -364,8 +364,8 @@ Trade-off:
 1. **Install SDK**: `npm install @vri/sdk` (or Python, Go, Rust)
 2. **Init client**: `const vri = new VRI({apiKey: '...'})`
 3. **Verify audio**: `await vri.verify({audioUrl, proofPackage})`
-4. **Log royalties**: VRI handles wallet updates
-5. **Pay creators**: Use VRI settlement API or directly integrate Stripe
+4. **Consume evidence**: feed verification outputs into your own rights, moderation, or business system
+5. **Keep downstream policy separate**: those workflows are outside the VRI core protocol
 
 See [examples/](../examples/) for code samples.
 

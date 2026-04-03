@@ -150,7 +150,9 @@ test("compliance: case-001 basic 16-bit PCM mono 48 kHz registration", async () 
 
     // nested proof_package
     const pp = body.proof_package;
-    assert.equal(pp.protocol_version, "1.0");
+    assert.equal(pp.protocol_version, "2.0");
+    assert.equal(pp.proof_type, "GENERATED");
+    assert.equal(pp.compliance_level, 2);
     assert.ok(Number.isInteger(pp.timestamp) && pp.timestamp > 0, `timestamp must be a positive integer: ${pp.timestamp}`);
     assert.ok(matchesPattern(pp.public_key, "0x*"), `public_key: ${pp.public_key}`);
     assert.ok(matchesPattern(getSignatureHex(pp.signature), "0x*"), `signature: ${JSON.stringify(pp.signature)}`);
@@ -184,7 +186,9 @@ test("compliance: case-002 IEEE float32 stereo 96 kHz with deterministic resampl
     assert.equal(status, 200, `Unexpected status: ${JSON.stringify(body)}`);
 
     assert.ok(matchesPattern(body.voiceId, "vri_*"), `voiceId: ${body.voiceId}`);
-    assert.equal(body.proof_package.protocol_version, "1.0");
+    assert.equal(body.proof_package.protocol_version, "2.0");
+    assert.equal(body.proof_package.proof_type, "GENERATED");
+    assert.equal(body.proof_package.compliance_level, 2);
     assert.ok(Number.isInteger(body.proof_package.timestamp) && body.proof_package.timestamp > 0);
     assert.equal(body.watermark?.mode, "vri-spread-spectrum-v1");
 
@@ -304,11 +308,12 @@ test("compliance: register then verify-proof returns ok=true for same audio", as
   const { server, baseUrl } = await startTestServer();
   try {
     const wav = buildWav({ channels: 1, sampleRate: 48000, audioFormat: 1, bitsPerSample: 16, durationMs: 100 });
+    const timestamp = Math.floor(Date.now() / 1000);
 
     const { body: regBody } = await postRegister(baseUrl, {
       audioBase64: wav.toString("base64"),
       metadata: { model_id: "tts-v3", operation: "voice_synthesis" },
-      timestamp: 1711892420,
+      timestamp,
       nonce: 10
     });
 

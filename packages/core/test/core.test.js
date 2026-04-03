@@ -1,11 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import {
+  buildTimestampAttestationReceipt,
   canonicalizeWavTo24BitLE,
+  createIdentityAssertion,
+  createSessionChallenge,
+  createNonceReplayTracker,
   getCanonicalMetadataString,
+  getTimestampAttestationReceiptDigest,
   sha256Hex,
   registerVoice,
+  verifyIdentityAssertion,
   verifyProofPackage
 } from "../src/index.js";
 import { canonicalizeWavTo24BitLEAsync } from "../src/index.js";
@@ -15,6 +25,18 @@ import {
   createKeyManager,
   createKmsKeyManager
 } from "../src/key-manager.js";
+import { createRevocationRegistry } from "../src/revocation-registry.js";
+import {
+  normalizeParsedRfc3161TokenResult,
+  normalizeTimestampTokenInput,
+  normalizeRfc3161TimestampAttestation,
+  verifyRfc3161TimestampAttestation
+} from "../src/timestamp-attestation.js";
+import {
+  buildOpenSslTimestampVerifyArgs,
+  parseOpenSslTsReplyText,
+  parseRfc3161TokenWithOpenSsl
+} from "../src/openssl-rfc3161.js";
 
 function createPcmWav({ sampleRate = 48000, channels = 1, audioFormat = 1, bitsPerSample = 16, samples }) {
   const effectiveBitsPerSample = audioFormat === 3 ? 32 : bitsPerSample;
@@ -57,6 +79,91 @@ function createPcmWav({ sampleRate = 48000, channels = 1, audioFormat = 1, bitsP
   header.writeUInt32LE(data.length, 40);
 
   return Buffer.concat([header, data]);
+}
+
+async function createRealOpenSslTimestampFixture(expectedDigestHex) {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vri-openssl-tsa-"));
+  const configPath = path.join(tempDir, "openssl.cnf");
+  const keyPath = path.join(tempDir, "tsa-key.pem");
+  const certPath = path.join(tempDir, "tsa-cert.pem");
+  const serialPath = path.join(tempDir, "tsaserial");
+  const queryPath = path.join(tempDir, "request.tsq");
+  const responsePath = path.join(tempDir, "response.tsr");
+  const config = `[ req ]
+distinguished_name = dn
+x509_extensions = v3_tsa
+prompt = no
+[ dn ]
+CN = Test TSA
+[ v3_tsa ]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical, digitalSignature, nonRepudiation
+extendedKeyUsage = critical, timeStamping
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+[ tsa ]
+default_tsa = tsa_config
+[ tsa_config ]
+serial = ${serialPath}
+crypto_device = builtin
+signer_cert = ${certPath}
+certs = ${certPath}
+signer_key = ${keyPath}
+signer_digest = sha256
+default_policy = 1.2.3.4.5
+other_policies = 1.2.3.4.5
+digests = sha256
+accuracy = secs:1
+ordering = yes
+tsa_name = yes
+ess_cert_id_chain = no
+`;
+
+  await writeFile(configPath, config, "utf8");
+  await writeFile(serialPath, "01\n", "utf8");
+
+  execFileSync("openssl", [
+    "req",
+    "-x509",
+    "-newkey", "rsa:2048",
+    "-keyout", keyPath,
+    "-out", certPath,
+    "-days", "1",
+    "-nodes",
+    "-config", configPath,
+    "-extensions", "v3_tsa"
+  ], { stdio: "ignore" });
+
+  execFileSync("openssl", [
+    "ts",
+    "-query",
+    "-digest", expectedDigestHex.slice(2),
+    "-sha256",
+    "-cert",
+    "-out", queryPath
+  ], { stdio: "ignore" });
+
+  execFileSync("openssl", [
+    "ts",
+    "-reply",
+    "-section", "tsa_config",
+    "-queryfile", queryPath,
+    "-out", responsePath
+  ], {
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      OPENSSL_CONF: configPath
+    }
+  });
+
+  const tokenBuffer = await readFile(responsePath);
+
+  return {
+    tempDir,
+    certPath,
+    tokenBase64: tokenBuffer.toString("base64")
+  };
 }
 
 test("canonical metadata is sorted and compact", () => {
@@ -220,6 +327,608 @@ test("registerVoice emits a proof package that verifyProofPackage accepts", asyn
 
   assert.equal(verification.ok, true);
   assert.equal(verification.reason, "VALID");
+});
+
+test("Level 1 proofs omit watermark fields and verify as PARTIAL", async () => {
+  const privateKeyPem = crypto.generateKeyPairSync("ed25519").privateKey.export({
+    format: "pem",
+    type: "pkcs8"
+  });
+  const wav = createPcmWav({
+    bitsPerSample: 16,
+    sampleRate: 48000,
+    samples: [500, -500, 1000, -1000]
+  });
+
+  const registration = await registerVoice(wav, {
+    privateKeyPem,
+    proofType: "RECORDED",
+    complianceLevel: 1,
+    metadata: {
+      operation: "studio_recording"
+    }
+  });
+
+  assert.equal(registration.proofPackage.protocol_version, "2.0");
+  assert.equal(registration.proofPackage.proof_type, "RECORDED");
+  assert.equal(registration.proofPackage.compliance_level, 1);
+  assert.equal("watermark_payload" in registration.proofPackage, false);
+  assert.equal("ledger_anchor" in registration.proofPackage, false);
+
+  const verification = verifyProofPackage(wav, registration.proofPackage);
+  assert.equal(verification.ok, true);
+  assert.equal(verification.trust_level, "PARTIAL");
+});
+
+test("tampering proof_type breaks signature verification", async () => {
+  const privateKeyPem = crypto.generateKeyPairSync("ed25519").privateKey.export({
+    format: "pem",
+    type: "pkcs8"
+  });
+  const wav = createPcmWav({
+    bitsPerSample: 16,
+    sampleRate: 48000,
+    samples: [100, -100, 200, -200]
+  });
+
+  const registration = await registerVoice(wav, {
+    privateKeyPem,
+    proofType: "GENERATED",
+    complianceLevel: 2,
+    metadata: {
+      operation: "voice_synthesis"
+    }
+  });
+  const tampered = {
+    ...registration.proofPackage,
+    proof_type: "RECORDED"
+  };
+
+  const verification = verifyProofPackage(wav, tampered, {
+    watermarkStatus: "present",
+    requireWatermarkCheck: true
+  });
+
+  assert.equal(verification.ok, false);
+  assert.equal(verification.reason, "INVALID_SIGNATURE");
+});
+
+test("verifyProofPackage reports current key status and conservative historical validity", async () => {
+  const keyManager = createKeyManager();
+  const revocationRegistry = createRevocationRegistry();
+  const wav = createPcmWav({
+    bitsPerSample: 16,
+    sampleRate: 48000,
+    samples: [120, -120, 240, -240]
+  });
+
+  const registration = await registerVoice(wav, {
+    keyManager,
+    proofType: "GENERATED",
+    complianceLevel: 2,
+    metadata: {
+      operation: "voice_synthesis"
+    }
+  });
+
+  revocationRegistry.revoke({
+    keyId: registration.proofPackage.key_id,
+    creatorId: registration.proofPackage.creator_id,
+    publicKey: registration.proofPackage.public_key,
+    effectiveAt: registration.proofPackage.timestamp + 60,
+    reason: "key_compromise"
+  });
+
+  const verification = verifyProofPackage(wav, registration.proofPackage, {
+    watermarkStatus: "present",
+    requireWatermarkCheck: true,
+    nowTimestamp: registration.proofPackage.timestamp + 120,
+    getKeyRevocationStatus: ({ keyId }) => revocationRegistry.get(keyId)
+  });
+
+  assert.equal(verification.ok, true);
+  assert.equal(verification.revocation.current_key_status, "REVOKED");
+  assert.equal(verification.revocation.historical_validity, "INDETERMINATE_UNATTESTED");
+  assert.equal(verification.revocation.revocation_record.key_id, registration.proofPackage.key_id);
+});
+
+test("createRevocationRegistry persists records when filePath is configured", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vri-revocation-registry-"));
+  const filePath = path.join(tempDir, "revocations.json");
+  const registry = createRevocationRegistry({ filePath });
+
+  registry.revoke({
+    keyId: "key_persisted",
+    creatorId: "creator_123",
+    publicKey: "0xpub",
+    effectiveAt: 1700000000,
+    reason: "key_compromise"
+  });
+
+  const reloaded = createRevocationRegistry({ filePath });
+  const persisted = JSON.parse(await readFile(filePath, "utf8"));
+
+  assert.equal(reloaded.get("key_persisted")?.reason, "key_compromise");
+  assert.equal(Array.isArray(persisted.records), true);
+  assert.equal(persisted.records[0].key_id, "key_persisted");
+});
+
+test("createNonceReplayTracker persists creator nonce observations when filePath is configured", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "vri-replay-tracker-"));
+  const filePath = path.join(tempDir, "nonce-replay.json");
+  const tracker = createNonceReplayTracker({ filePath });
+
+  tracker.add("0xcreator", "nonce-1");
+
+  const reloaded = createNonceReplayTracker({ filePath });
+  const persisted = JSON.parse(await readFile(filePath, "utf8"));
+
+  assert.equal(reloaded.has("0xcreator", "nonce-1"), true);
+  assert.equal(Array.isArray(persisted.records), true);
+  assert.equal(persisted.records[0].creator_id, "0xcreator");
+});
+
+test("timestamp attestation receipt digest is deterministic", async () => {
+  const wav = createPcmWav({
+    bitsPerSample: 16,
+    sampleRate: 48000,
+    samples: [50, -50, 75, -75]
+  });
+  const registration = await registerVoice(wav, {
+    proofType: "GENERATED",
+    complianceLevel: 2,
+    metadata: {
+      operation: "voice_synthesis"
+    }
+  });
+  const proofPackage = {
+    ...registration.proofPackage,
+    compliance_level: 3,
+    usage_event_id: "evt_level3_test",
+    ledger_anchor: "0xabc123"
+  };
+
+  const receipt = buildTimestampAttestationReceipt(proofPackage);
+  const digestA = getTimestampAttestationReceiptDigest(proofPackage);
+  const digestB = getTimestampAttestationReceiptDigest({
+    ...proofPackage,
+    metadata: {
+      ignored: true
+    }
+  });
+
+  assert.equal(receipt.protocol_version, "2.0");
+  assert.equal(receipt.usage_event_id, "evt_level3_test");
+  assert.equal(digestA, digestB);
+});
+
+test("normalized RFC3161 timestamp attestation profile verifies trusted TSAs", () => {
+  const attestation = {
+    type: "RFC3161",
+    tsa: "tsa.vri.example",
+    policy_oid: "1.2.3.4.5",
+    serial_number: "0x1234",
+    message_imprint_alg: "sha256",
+    message_imprint: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    attested_at: 1711892410,
+    gen_time: 1711892410,
+    token: "base64(tsr)"
+  };
+
+  const trusted = verifyRfc3161TimestampAttestation(attestation, {
+    expectedDigest: attestation.message_imprint,
+    trustedAuthorities: ["tsa.vri.example"]
+  });
+  assert.equal(trusted.ok, true);
+
+  const untrusted = verifyRfc3161TimestampAttestation(attestation, {
+    expectedDigest: attestation.message_imprint,
+    trustedAuthorities: ["other.example"]
+  });
+  assert.equal(untrusted.ok, false);
+});
+
+test("normalized RFC3161 timestamp attestation profile enforces policy_oid allowlists when configured", () => {
+  const attestation = {
+    type: "RFC3161",
+    tsa: "tsa.vri.example",
+    policy_oid: "1.2.3.4.9",
+    serial_number: "0x1234",
+    message_imprint_alg: "sha256",
+    message_imprint: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    attested_at: 1711892410,
+    gen_time: 1711892410,
+    token: "base64(tsr)"
+  };
+
+  const verification = verifyRfc3161TimestampAttestation(attestation, {
+    expectedDigest: attestation.message_imprint,
+    trustedAuthorities: [
+      {
+        tsa: "tsa.vri.example",
+        policy_oids: ["1.2.3.4.5"]
+      }
+    ]
+  });
+
+  assert.equal(verification.ok, false);
+  assert.match(verification.reason, /policy_oid is not trusted/);
+});
+
+test("raw RFC3161 token normalization requires a parser and validates normalized output", () => {
+  const rawToken = "base64(raw-tsr)";
+  const withoutParser = normalizeRfc3161TimestampAttestation(rawToken, {
+    expectedDigest: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  });
+  assert.equal(withoutParser.ok, false);
+
+  const withParser = normalizeRfc3161TimestampAttestation(rawToken, {
+    expectedDigest: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    trustedAuthorities: ["tsa.vri.example"],
+    parseRfc3161Token: () => ({
+      type: "RFC3161",
+      tsa: "tsa.vri.example",
+      policy_oid: "1.2.3.4.5",
+      serial_number: "0x1234",
+      message_imprint_alg: "sha256",
+      message_imprint: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      attested_at: 1711892410,
+      gen_time: 1711892410,
+      token: rawToken
+    })
+  });
+
+  assert.equal(withParser.ok, true);
+  assert.equal(withParser.attestation.token, rawToken);
+});
+
+test("timestamp token input normalization accepts explicit encodings and rejects invalid ones", () => {
+  const base64Token = normalizeTimestampTokenInput({
+    encoding: "base64",
+    data: Buffer.from("tsr").toString("base64")
+  });
+  assert.equal(base64Token.ok, true);
+
+  const hexToken = normalizeTimestampTokenInput({
+    encoding: "hex",
+    data: "0xdeadbeef"
+  });
+  assert.equal(hexToken.ok, true);
+
+  const invalidEncoding = normalizeTimestampTokenInput({
+    encoding: "der",
+    data: "abcd"
+  });
+  assert.equal(invalidEncoding.ok, false);
+});
+
+test("RFC3161 parser result normalization accepts object and wrapped success forms", () => {
+  const plain = normalizeParsedRfc3161TokenResult({
+    type: "RFC3161",
+    tsa: "tsa.vri.example"
+  });
+  assert.equal(plain.ok, true);
+  assert.equal(plain.attestation.type, "RFC3161");
+
+  const wrapped = normalizeParsedRfc3161TokenResult({
+    ok: true,
+    attestation: {
+      type: "RFC3161",
+      tsa: "tsa.vri.example"
+    }
+  });
+  assert.equal(wrapped.ok, true);
+  assert.equal(wrapped.attestation.tsa, "tsa.vri.example");
+
+  const failed = normalizeParsedRfc3161TokenResult({
+    ok: false,
+    reason: "bad cms signature"
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.reason, "bad cms signature");
+});
+
+test("parseOpenSslTsReplyText extracts normalized RFC3161 fields from openssl output", () => {
+  const parsed = parseOpenSslTsReplyText(`
+Status info:
+Status: Granted.
+
+TST info:
+Version: 1
+Policy OID: 1.2.3.4.5
+Hash Algorithm: sha256
+Message data:
+    0000 - aa aa aa aa aa aa aa aa-aa aa aa aa aa aa aa aa   ................
+    0010 - aa aa aa aa aa aa aa aa-aa aa aa aa aa aa aa aa   ................
+Serial number: 0x1234
+Time stamp: Apr  1 12:00:10 2026 GMT
+TSA: DirName:/CN=tsa.vri.example
+`, {
+    token: "base64(tsr)"
+  });
+
+  assert.equal(parsed.tsa, "tsa.vri.example");
+  assert.equal(parsed.policy_oid, "1.2.3.4.5");
+  assert.equal(parsed.serial_number, "0x1234");
+  assert.equal(parsed.message_imprint_alg, "sha256");
+  assert.equal(parsed.message_imprint, `0x${"aa".repeat(32)}`);
+  assert.equal(parsed.attested_at, 1775044810);
+});
+
+test("parseRfc3161TokenWithOpenSsl uses openssl parse and verify commands fail-closed", () => {
+  const calls = [];
+  const result = parseRfc3161TokenWithOpenSsl("YmFzZTY0LXRva2Vu", {
+    tokenEncoding: "base64",
+    expectedDigest: `0x${"aa".repeat(32)}`,
+    openSslOptions: {
+      caFile: "/tmp/test-ca.pem",
+      execFileSync: (binary, args) => {
+        calls.push([binary, args]);
+
+        if (args.includes("-reply")) {
+          return `
+Status info:
+Status: Granted.
+TST info:
+Policy OID: 1.2.3.4.5
+Hash Algorithm: sha256
+Message data:
+    0000 - aa aa aa aa aa aa aa aa-aa aa aa aa aa aa aa aa
+    0010 - aa aa aa aa aa aa aa aa-aa aa aa aa aa aa aa aa
+Serial number: 0x1234
+Time stamp: Apr  1 12:00:10 2026 GMT
+TSA: DirName:/CN=tsa.vri.example
+`;
+        }
+
+        return "";
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], "openssl");
+  assert.equal(calls[1][1].includes("-verify"), true);
+});
+
+test("buildOpenSslTimestampVerifyArgs maps trust and revocation policy options deterministically", () => {
+  const args = buildOpenSslTimestampVerifyArgs({
+    tokenIn: true,
+    caFile: "/tmp/root.pem",
+    untrustedFile: "/tmp/intermediate.pem",
+    purpose: "timestamp_sign",
+    verifyName: "tsa_policy",
+    verifyDepth: 3,
+    authLevel: 2,
+    attime: 1775044800,
+    policy: "1.2.3.4.5",
+    crlCheck: true,
+    crlCheckAll: true,
+    policyCheck: true,
+    explicitPolicy: true,
+    inhibitAny: true,
+    inhibitMap: true,
+    x509Strict: true,
+    useDeltas: true,
+    extendedCrl: true,
+    checkSsSig: true,
+    partialChain: true,
+    noCheckTime: true,
+    verifyArgs: ["-allow_proxy_certs"]
+  });
+
+  assert.deepEqual(args, [
+    "-token_in",
+    "-CAfile", "/tmp/root.pem",
+    "-untrusted", "/tmp/intermediate.pem",
+    "-purpose", "timestamp_sign",
+    "-verify_name", "tsa_policy",
+    "-verify_depth", "3",
+    "-auth_level", "2",
+    "-attime", "1775044800",
+    "-policy", "1.2.3.4.5",
+    "-crl_check",
+    "-crl_check_all",
+    "-policy_check",
+    "-explicit_policy",
+    "-inhibit_any",
+    "-inhibit_map",
+    "-x509_strict",
+    "-use_deltas",
+    "-extended_crl",
+    "-check_ss_sig",
+    "-partial_chain",
+    "-no_check_time",
+    "-allow_proxy_certs"
+  ]);
+});
+
+test("parseRfc3161TokenWithOpenSsl validates a real RFC3161 token generated by openssl", async () => {
+  const expectedDigest = `0x${"aa".repeat(32)}`;
+  const fixture = await createRealOpenSslTimestampFixture(expectedDigest);
+
+  try {
+    const parsed = parseRfc3161TokenWithOpenSsl(fixture.tokenBase64, {
+      tokenEncoding: "base64",
+      expectedDigest,
+      openSslOptions: {
+        caFile: fixture.certPath
+      }
+    });
+
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.attestation.type, "RFC3161");
+    assert.equal(parsed.attestation.message_imprint, expectedDigest);
+    assert.equal(parsed.attestation.policy_oid, "1.2.3.4.5");
+    assert.equal(parsed.attestation.tsa, "Test TSA");
+  } finally {
+    execFileSync("rm", ["-rf", fixture.tempDir]);
+  }
+});
+
+test("timestamp trust release artifact generator publishes a manifest aligned with the catalog", async () => {
+  execFileSync("node", ["scripts/generate-timestamp-trust-release.mjs"], {
+    cwd: path.resolve(process.cwd()),
+    stdio: "ignore"
+  });
+
+  const catalog = JSON.parse(await readFile("docs/formal/timestamp-trust-profiles.catalog.json", "utf8"));
+  const release = JSON.parse(await readFile("docs/release/timestamp-trust-profiles.release.json", "utf8"));
+
+  assert.equal(release.artifact, "vri.timestamp-trust-profiles.release");
+  assert.equal(release.source_catalog, "docs/formal/timestamp-trust-profiles.catalog.json");
+  assert.equal(release.profile_count, catalog.profiles.length);
+  assert.deepEqual(
+    release.profiles.map((entry) => entry.profile_id),
+    catalog.profiles.map((entry) => entry.profile_id)
+  );
+  assert.match(release.catalog_digest, /^0x[0-9a-f]{64}$/);
+});
+
+test("Level 3 verification requires a valid timestamp attestation verifier", async () => {
+  const wav = createPcmWav({
+    bitsPerSample: 16,
+    sampleRate: 48000,
+    samples: [300, -300, 600, -600]
+  });
+  const registration = await registerVoice(wav, {
+    proofType: "GENERATED",
+    complianceLevel: 3,
+    ledgerAnchor: "0xfeedface",
+    usageEventId: "evt_level3_valid",
+    timestampAttestation: {
+      type: "RFC3161",
+      tsa: "tsa.vri.example",
+      policy_oid: "1.2.3.4.5",
+      serial_number: "0x1234",
+      message_imprint_alg: "sha256",
+      attested_at: 1711892500,
+      gen_time: 1711892500,
+      token: "base64(tsr)",
+      digest: "0xplaceholder"
+    },
+    timestamp: 1711892400,
+    metadata: {
+      operation: "voice_synthesis"
+    }
+  });
+  const proofPackage = {
+    ...registration.proofPackage,
+    timestamp_attestation: {
+      ...registration.proofPackage.timestamp_attestation,
+      digest: getTimestampAttestationReceiptDigest(registration.proofPackage)
+    }
+  };
+
+  const missingVerifier = verifyProofPackage(wav, proofPackage, {
+    watermarkStatus: "present",
+    requireWatermarkCheck: true
+  });
+  assert.equal(missingVerifier.ok, false);
+  assert.equal(missingVerifier.reason, "TIMESTAMP_ATTESTATION_VERIFIER_REQUIRED");
+
+  const verified = verifyProofPackage(wav, proofPackage, {
+    watermarkStatus: "present",
+    requireWatermarkCheck: true,
+    verifyTimestampAttestation: (attestation, { expectedDigest }) => verifyRfc3161TimestampAttestation(
+      {
+        ...attestation,
+        message_imprint: expectedDigest
+      },
+      {
+        expectedDigest,
+        trustedAuthorities: ["tsa.vri.example"]
+      }
+    )
+  });
+
+  assert.equal(verified.ok, true);
+  assert.equal(verified.trust_level, "HIGH");
+});
+
+test("identity assertion verifies and expires fail-closed", () => {
+  const challenge = createSessionChallenge({
+    verifierOrigin: "https://studio.vri.example",
+    expiresAt: 1711892600,
+    sessionScope: ["recording", "export"],
+    sessionPublicKey: "0x1234abcd"
+  });
+  const identity = createIdentityAssertion(challenge, {
+    privateKeyPem: crypto.generateKeyPairSync("ed25519").privateKey.export({
+      format: "pem",
+      type: "pkcs8"
+    }),
+    sessionTimestamp: 1711892400
+  });
+
+  const valid = verifyIdentityAssertion(identity, {
+    nowTimestamp: 1711892500,
+    trustedVerifierOrigins: ["https://studio.vri.example"]
+  });
+  assert.equal(valid.ok, true);
+
+  const expired = verifyIdentityAssertion(identity, {
+    nowTimestamp: 1711892700,
+    trustedVerifierOrigins: ["https://studio.vri.example"]
+  });
+  assert.equal(expired.ok, false);
+  assert.equal(expired.reason, "IDENTITY_SESSION_EXPIRED");
+});
+
+test("proof signature is bound to identity object", async () => {
+  const proofTimestamp = Math.floor(Date.now() / 1000);
+  const devicePrivateKeyPem = crypto.generateKeyPairSync("ed25519").privateKey.export({
+    format: "pem",
+    type: "pkcs8"
+  });
+  const challenge = createSessionChallenge({
+    verifierOrigin: "https://studio.vri.example",
+    expiresAt: proofTimestamp + 300,
+    sessionScope: ["generation"],
+    sessionPublicKey: "0xsessionpub"
+  });
+  const identity = createIdentityAssertion(challenge, {
+    privateKeyPem: devicePrivateKeyPem,
+    sessionTimestamp: proofTimestamp
+  });
+  const wav = createPcmWav({
+    bitsPerSample: 16,
+    sampleRate: 48000,
+    samples: [1000, -1000, 2000, -2000]
+  });
+
+  const registration = await registerVoice(wav, {
+    proofType: "GENERATED",
+    complianceLevel: 2,
+    identity,
+    timestamp: proofTimestamp,
+    metadata: {
+      operation: "voice_synthesis"
+    }
+  });
+
+  const ok = verifyProofPackage(wav, registration.proofPackage, {
+    watermarkStatus: "present",
+    requireWatermarkCheck: true,
+    trustedVerifierOrigins: ["https://studio.vri.example"]
+  });
+  assert.equal(ok.ok, true);
+
+  const tampered = {
+    ...registration.proofPackage,
+    identity: {
+      ...registration.proofPackage.identity,
+      session_id: "tampered-session"
+    }
+  };
+  const verification = verifyProofPackage(wav, tampered, {
+    watermarkStatus: "present",
+    requireWatermarkCheck: true,
+    trustedVerifierOrigins: ["https://studio.vri.example"]
+  });
+  assert.equal(verification.ok, false);
+  assert.equal(verification.reason, "IDENTITY_SIGNATURE_INVALID");
 });
 
 test("createKeyManager generates an ephemeral Ed25519 key when no PEM is provided", () => {

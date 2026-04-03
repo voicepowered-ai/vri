@@ -1,9 +1,86 @@
 import { readFile } from "node:fs/promises";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 export const DEFAULT_REGISTRY = "vri:testnet";
 const SPKI_PREFIX_ED25519 = Buffer.from("302a300506032b6570032100", "hex");
-const SIGNATURE_CONTEXT_PREFIX = Buffer.from("VRI-SIG-V1\0", "utf8");
+const SIGNATURE_CONTEXT_PREFIX = Buffer.from("VRI-SIG-V2\0", "utf8");
+const IDENTITY_CONTEXT_PREFIX = Buffer.from("VRI-ID-QR-V1\0", "utf8");
+
+export const PROOF_TYPES = {
+  RECORDED: "RECORDED",
+  GENERATED: "GENERATED"
+};
+
+export const IDENTITY_AUTH_METHODS = {
+  QR_SECURE_ENCLAVE: "QR_SECURE_ENCLAVE"
+};
+
+export const SESSION_SCOPES = {
+  RECORDING: "recording",
+  GENERATION: "generation",
+  EXPORT: "export"
+};
+
+export const KEY_STATUS = {
+  ACTIVE: "ACTIVE",
+  REVOKED: "REVOKED",
+  UNKNOWN: "UNKNOWN"
+};
+
+export const HISTORICAL_VALIDITY = {
+  NO_REVOCATION_RECORDED: "NO_REVOCATION_RECORDED",
+  VALID_AT_ATTESTED_TIME: "VALID_AT_ATTESTED_TIME",
+  REVOKED_AT_ATTESTED_TIME: "REVOKED_AT_ATTESTED_TIME",
+  INDETERMINATE_UNATTESTED: "INDETERMINATE_UNATTESTED",
+  UNKNOWN: "UNKNOWN"
+};
+
+function normalizeProofType(value) {
+  if (value !== PROOF_TYPES.RECORDED && value !== PROOF_TYPES.GENERATED) {
+    throw new TypeError(`proof_type must be ${PROOF_TYPES.RECORDED} or ${PROOF_TYPES.GENERATED}.`);
+  }
+
+  return value;
+}
+
+function normalizeComplianceLevel(value) {
+  if (!Number.isInteger(value) || value < 1 || value > 3) {
+    throw new TypeError("compliance_level must be an integer in range [1,3].");
+  }
+
+  return value;
+}
+
+function getProofTypeCode(proofType) {
+  return proofType === PROOF_TYPES.RECORDED ? 0x01 : 0x02;
+}
+
+function normalizeIdentityAuthMethod(value) {
+  if (value !== IDENTITY_AUTH_METHODS.QR_SECURE_ENCLAVE) {
+    throw new TypeError(`auth_method must be ${IDENTITY_AUTH_METHODS.QR_SECURE_ENCLAVE}.`);
+  }
+
+  return value;
+}
+
+function normalizeSessionScopes(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError("session_scope must be a non-empty array.");
+  }
+
+  const allowed = new Set(Object.values(SESSION_SCOPES));
+  const normalized = value.map((entry) => {
+    if (typeof entry !== "string" || !allowed.has(entry)) {
+      throw new TypeError("session_scope contains an unsupported value.");
+    }
+
+    return entry;
+  });
+
+  return [...new Set(normalized)].sort();
+}
 
 export async function readAudioInput(input) {
   if (typeof input === "string") {
@@ -75,26 +152,87 @@ function decodeProofBytes(value, label, expectedLength = null) {
 }
 
 class NonceReplayTracker {
-  constructor() {
+  constructor(options = {}) {
     this.map = new Map();
+    this.filePath = options.filePath ?? null;
+
+    if (this.filePath) {
+      this.#loadFromDisk();
+    }
+  }
+
+  #loadFromDisk() {
+    if (!fs.existsSync(this.filePath)) {
+      return;
+    }
+
+    const payload = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+    const records = Array.isArray(payload?.records) ? payload.records : [];
+
+    for (const record of records) {
+      if (!record || typeof record.creator_id !== "string" || !Array.isArray(record.nonces)) {
+        continue;
+      }
+
+      this.map.set(record.creator_id, new Set(
+        record.nonces
+          .map((nonce) => normalizeReplayNonceValue(nonce))
+          .filter((nonce) => nonce !== null)
+      ));
+    }
+  }
+
+  #persistToDisk() {
+    if (!this.filePath) {
+      return;
+    }
+
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    fs.writeFileSync(this.filePath, JSON.stringify({
+      version: 1,
+      records: Array.from(this.map.entries()).map(([creatorId, nonces]) => ({
+        creator_id: creatorId,
+        nonces: Array.from(nonces.values()).sort()
+      }))
+    }, null, 2), "utf8");
   }
 
   has(creatorIdHex, nonce) {
     const set = this.map.get(creatorIdHex);
-    return Boolean(set && set.has(nonce));
+    const normalizedNonce = normalizeReplayNonceValue(nonce);
+    return Boolean(set && normalizedNonce !== null && set.has(normalizedNonce));
   }
 
   add(creatorIdHex, nonce) {
+    const normalizedNonce = normalizeReplayNonceValue(nonce);
+
+    if (normalizedNonce === null) {
+      throw new TypeError("nonce replay tracker requires a string or integer nonce.");
+    }
+
     if (!this.map.has(creatorIdHex)) {
       this.map.set(creatorIdHex, new Set());
     }
 
-    this.map.get(creatorIdHex).add(nonce);
+    this.map.get(creatorIdHex).add(normalizedNonce);
+    this.#persistToDisk();
   }
 }
 
-export function createNonceReplayTracker() {
-  return new NonceReplayTracker();
+export function createNonceReplayTracker(options = {}) {
+  return new NonceReplayTracker(options);
+}
+
+function normalizeReplayNonceValue(value) {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  if (Number.isInteger(value) && value >= 0) {
+    return String(value);
+  }
+
+  return null;
 }
 
 export function canonicalizeJsonValue(value) {
@@ -137,6 +275,222 @@ export function getCanonicalMetadataString(metadata = {}) {
   return canonicalizeJsonValue(metadata);
 }
 
+export function buildTimestampAttestationReceipt(proofPackage) {
+  if (!proofPackage || typeof proofPackage !== "object" || Array.isArray(proofPackage)) {
+    throw new TypeError("proofPackage must be a JSON object.");
+  }
+
+  return {
+    protocol_version: proofPackage.protocol_version ?? null,
+    proof_type: proofPackage.proof_type ?? null,
+    compliance_level: proofPackage.compliance_level ?? null,
+    audio_hash: proofPackage.audio_hash ?? null,
+    public_key: proofPackage.public_key ?? null,
+    creator_id: proofPackage.creator_id ?? null,
+    timestamp: proofPackage.timestamp ?? null,
+    usage_event_id: proofPackage.usage_event_id ?? null
+  };
+}
+
+export function getTimestampAttestationReceiptString(proofPackage) {
+  return canonicalizeJsonValue(buildTimestampAttestationReceipt(proofPackage));
+}
+
+export function getTimestampAttestationReceiptDigest(proofPackage) {
+  return hex(
+    crypto.createHash("sha256")
+      .update(Buffer.from(getTimestampAttestationReceiptString(proofPackage), "utf8"))
+      .digest()
+  );
+}
+
+export function createSessionChallenge({
+  verifierOrigin,
+  sessionId = crypto.randomUUID(),
+  nonce = crypto.randomBytes(16).toString("base64"),
+  expiresAt,
+  sessionScope,
+  sessionPublicKey
+}) {
+  if (!Number.isInteger(expiresAt) || expiresAt <= 0) {
+    throw new TypeError("expiresAt must be a positive integer.");
+  }
+
+  return {
+    auth_method: IDENTITY_AUTH_METHODS.QR_SECURE_ENCLAVE,
+    verifier_origin: verifierOrigin,
+    session_id: sessionId,
+    nonce,
+    session_scope: normalizeSessionScopes(sessionScope),
+    session_expires_at: expiresAt,
+    session_public_key: sessionPublicKey
+  };
+}
+
+function getUnsignedIdentityPayload(identity) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
+    throw new TypeError("identity must be a JSON object.");
+  }
+
+  const sessionTimestamp = Number(identity.session_timestamp);
+  const sessionExpiresAt = Number(identity.session_expires_at);
+
+  if (!Number.isInteger(sessionTimestamp) || sessionTimestamp < 0) {
+    throw new TypeError("identity.session_timestamp must be a non-negative integer.");
+  }
+
+  if (!Number.isInteger(sessionExpiresAt) || sessionExpiresAt < 0) {
+    throw new TypeError("identity.session_expires_at must be a non-negative integer.");
+  }
+
+  if (sessionExpiresAt <= sessionTimestamp) {
+    throw new TypeError("identity.session_expires_at must be later than session_timestamp.");
+  }
+
+  const payload = {
+    auth_method: normalizeIdentityAuthMethod(identity.auth_method),
+    verifier_origin: identity.verifier_origin,
+    session_id: identity.session_id,
+    nonce: identity.nonce,
+    session_scope: normalizeSessionScopes(identity.session_scope),
+    session_public_key: identity.session_public_key,
+    public_key: identity.public_key,
+    session_timestamp: sessionTimestamp,
+    session_expires_at: sessionExpiresAt,
+    device_attested: identity.device_attested === true
+  };
+
+  if (identity.attestation != null) {
+    payload.attestation = identity.attestation;
+  }
+
+  return payload;
+}
+
+export function getCanonicalIdentityString(identity) {
+  const normalized = {
+    ...getUnsignedIdentityPayload(identity),
+    signature: identity.signature
+  };
+
+  return canonicalizeJsonValue(normalized);
+}
+
+export function buildIdentityChallengeDigest(identity) {
+  const payloadBytes = Buffer.from(canonicalizeJsonValue(getUnsignedIdentityPayload(identity)), "utf8");
+
+  return crypto.createHash("sha256").update(Buffer.concat([
+    IDENTITY_CONTEXT_PREFIX,
+    encodeUint32BigEndian(payloadBytes.length),
+    payloadBytes
+  ])).digest();
+}
+
+export function createIdentityAssertion(challenge, options = {}) {
+  const signingMaterial = options.privateKeyPem
+    ? createSigningMaterial(options.privateKeyPem)
+    : createSigningMaterial();
+  const publicKeyBytes = getRawPublicKeyBytes(signingMaterial.publicKey);
+  const identity = {
+    auth_method: IDENTITY_AUTH_METHODS.QR_SECURE_ENCLAVE,
+    verifier_origin: challenge.verifier_origin,
+    session_id: challenge.session_id,
+    nonce: challenge.nonce,
+    session_scope: normalizeSessionScopes(challenge.session_scope),
+    session_public_key: challenge.session_public_key,
+    public_key: hex(publicKeyBytes),
+    session_timestamp: options.sessionTimestamp ?? Math.floor(Date.now() / 1000),
+    session_expires_at: challenge.session_expires_at,
+    device_attested: options.deviceAttested ?? false,
+    ...(options.attestation ? { attestation: options.attestation } : {})
+  };
+  const digest = buildIdentityChallengeDigest(identity);
+  const signature = crypto.sign(null, digest, signingMaterial.privateKey);
+
+  return {
+    ...identity,
+    signature: hex(signature)
+  };
+}
+
+export function verifyIdentityAssertion(identity, options = {}) {
+  const nowTimestamp = Number(options.nowTimestamp ?? Math.floor(Date.now() / 1000));
+  const trustedVerifierOrigins = options.trustedVerifierOrigins ?? null;
+  const expectedSessionId = options.expectedSessionId ?? null;
+  const expectedNonce = options.expectedNonce ?? null;
+  const expectedSessionPublicKey = options.expectedSessionPublicKey ?? null;
+  const verifyDeviceAttestation = typeof options.verifyDeviceAttestation === "function"
+    ? options.verifyDeviceAttestation
+    : null;
+  const fail = (reason, details = {}) => ({ ok: false, reason, details });
+
+  try {
+    const payload = getUnsignedIdentityPayload(identity);
+    const signature = decodeProofBytes(identity.signature, "identity.signature", 64);
+    const publicKeyBytes = decodeHex(payload.public_key, "identity.public_key");
+    const publicKey = crypto.createPublicKey({
+      key: Buffer.concat([SPKI_PREFIX_ED25519, publicKeyBytes]),
+      format: "der",
+      type: "spki"
+    });
+
+    if (trustedVerifierOrigins && !trustedVerifierOrigins.includes(payload.verifier_origin)) {
+      return fail("IDENTITY_UNTRUSTED_ORIGIN", { verifier_origin: payload.verifier_origin });
+    }
+
+    if (expectedSessionId != null && payload.session_id !== expectedSessionId) {
+      return fail("IDENTITY_SESSION_ID_MISMATCH", {
+        expected: expectedSessionId,
+        received: payload.session_id
+      });
+    }
+
+    if (expectedNonce != null && payload.nonce !== expectedNonce) {
+      return fail("IDENTITY_NONCE_MISMATCH", {
+        expected: expectedNonce,
+        received: payload.nonce
+      });
+    }
+
+    if (expectedSessionPublicKey != null && payload.session_public_key !== expectedSessionPublicKey) {
+      return fail("IDENTITY_SESSION_KEY_MISMATCH", {
+        expected: expectedSessionPublicKey,
+        received: payload.session_public_key
+      });
+    }
+
+    if (nowTimestamp > payload.session_expires_at) {
+      return fail("IDENTITY_SESSION_EXPIRED", {
+        now: nowTimestamp,
+        session_expires_at: payload.session_expires_at
+      });
+    }
+
+    if (payload.device_attested === true) {
+      if (!payload.attestation || !verifyDeviceAttestation) {
+        return fail("IDENTITY_DEVICE_ATTESTATION_UNVERIFIED");
+      }
+
+      if (verifyDeviceAttestation(payload.attestation, payload) !== true) {
+        return fail("IDENTITY_DEVICE_ATTESTATION_INVALID");
+      }
+    }
+
+    const digest = buildIdentityChallengeDigest(identity);
+    if (!crypto.verify(null, digest, publicKey, signature)) {
+      return fail("IDENTITY_SIGNATURE_INVALID");
+    }
+
+    return {
+      ok: true,
+      reason: "IDENTITY_VALID",
+      details: payload
+    };
+  } catch (error) {
+    return fail("IDENTITY_INVALID", { error: error.message });
+  }
+}
+
 export function encodeUint64BigEndian(value) {
   const normalizedValue = typeof value === "bigint" ? value : BigInt(value);
   const buffer = Buffer.alloc(8);
@@ -148,6 +502,15 @@ export function encodeUint32BigEndian(value) {
   const buffer = Buffer.alloc(4);
   buffer.writeUInt32BE(value);
   return buffer;
+}
+
+function encodeLengthPrefixedUtf8(value, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError(`${label} must be a non-empty string.`);
+  }
+
+  const encoded = Buffer.from(value, "utf8");
+  return Buffer.concat([encodeUint32BigEndian(encoded.length), encoded]);
 }
 
 export function parseWavFile(buffer) {
@@ -409,11 +772,32 @@ export function createWatermarkPayload(publicKeyBytes, timestamp, nonce = crypto
   return payload;
 }
 
-export function buildSignatureMessageDigest({ watermarkPayload, audioHash, timestamp, canonicalMetadata }) {
+export function buildSignatureMessageDigest({
+  proofType,
+  complianceLevel,
+  watermarkPayload,
+  identity,
+  audioHash,
+  timestamp,
+  canonicalMetadata
+}) {
   const canonicalMetadataBytes = Buffer.from(canonicalMetadata, "utf8");
+  const normalizedProofType = normalizeProofType(proofType);
+  const normalizedComplianceLevel = normalizeComplianceLevel(complianceLevel);
+  const watermarkFlag = watermarkPayload ? 0x01 : 0x00;
+  const watermarkBytes = watermarkPayload ?? Buffer.alloc(8, 0);
+  const identityFlag = identity ? 0x01 : 0x00;
+  const identityBytes = identity
+    ? crypto.createHash("sha256").update(Buffer.from(getCanonicalIdentityString(identity), "utf8")).digest()
+    : Buffer.alloc(32, 0);
   const messageInput = Buffer.concat([
     SIGNATURE_CONTEXT_PREFIX,
-    watermarkPayload,
+    Buffer.from([getProofTypeCode(normalizedProofType)]),
+    Buffer.from([normalizedComplianceLevel]),
+    Buffer.from([watermarkFlag]),
+    watermarkBytes,
+    Buffer.from([identityFlag]),
+    identityBytes,
     audioHash,
     encodeUint64BigEndian(timestamp),
     encodeUint32BigEndian(canonicalMetadataBytes.length),
@@ -456,6 +840,36 @@ export async function registerVoice(input, options = {}) {
   const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
   const metadata = options.metadata ?? {};
   const canonicalMetadata = getCanonicalMetadataString(metadata);
+  const proofType = normalizeProofType(options.proofType ?? PROOF_TYPES.GENERATED);
+  const complianceLevel = normalizeComplianceLevel(
+    options.complianceLevel ?? (proofType === PROOF_TYPES.GENERATED ? 2 : 1)
+  );
+  const includeWatermark = options.includeWatermark
+    ?? (proofType === PROOF_TYPES.GENERATED && complianceLevel >= 2);
+  const requireIdentity = options.requireIdentity ?? false;
+  const identity = options.identity ?? null;
+
+  if (complianceLevel === 1 && includeWatermark) {
+    throw new TypeError("Level 1 proofs MUST NOT include watermark fields.");
+  }
+
+  if (requireIdentity && !identity) {
+    throw new TypeError("Identity is required in this profile.");
+  }
+
+  if (identity) {
+    const identityVerification = verifyIdentityAssertion(identity, {
+      nowTimestamp: timestamp,
+      expectedSessionPublicKey: options.expectedSessionPublicKey ?? null,
+      trustedVerifierOrigins: options.trustedVerifierOrigins ?? null,
+      verifyDeviceAttestation: options.verifyDeviceAttestation
+    });
+
+    if (!identityVerification.ok) {
+      throw new TypeError(`Identity assertion invalid: ${identityVerification.reason}`);
+    }
+  }
+
   let signer;
 
   if (options.keyManager) {
@@ -476,9 +890,14 @@ export async function registerVoice(input, options = {}) {
   }
 
   const publicKeyBytes = signer.publicKeyBytes;
-  const watermarkPayload = createWatermarkPayload(publicKeyBytes, timestamp, options.nonce);
+  const watermarkPayload = includeWatermark
+    ? createWatermarkPayload(publicKeyBytes, timestamp, options.nonce)
+    : null;
   const messageDigest = buildSignatureMessageDigest({
+    proofType,
+    complianceLevel,
     watermarkPayload,
+    identity,
     audioHash: Buffer.from(audioHash, "hex"),
     timestamp,
     canonicalMetadata
@@ -492,17 +911,21 @@ export async function registerVoice(input, options = {}) {
   return {
     voiceId,
     status: "registered",
-    complianceLevel: ledgerAnchor ? 3 : 1,
+    proofType,
+    complianceLevel,
     fingerprint: createVoiceFingerprint(audio),
     audioHash,
     registry: options.registry ?? DEFAULT_REGISTRY,
     createdAt: new Date(Number(timestamp) * 1000).toISOString(),
     proofPackage: {
-      protocol_version: "1.0",
-      compliance_level: ledgerAnchor ? 3 : 1,
-      watermark_format_version: "1.0",
-      watermark_payload: watermarkPayload.toString("base64"),
-      watermark_hex: hex(watermarkPayload),
+      protocol_version: "2.0",
+      proof_type: proofType,
+      compliance_level: complianceLevel,
+      ...(watermarkPayload ? {
+        watermark_format_version: "1.0",
+        watermark_payload: watermarkPayload.toString("base64"),
+        watermark_hex: hex(watermarkPayload)
+      } : {}),
       audio_hash: hex(Buffer.from(audioHash, "hex")),
       signature: {
         algorithm: "Ed25519",
@@ -513,8 +936,12 @@ export async function registerVoice(input, options = {}) {
       timestamp,
       metadata,
       canonical_metadata: canonicalMetadata,
-      usage_event_id: usageEventId,
-      ledger_anchor: ledgerAnchor,
+      ...(identity ? { identity } : {}),
+      ...(complianceLevel >= 3 ? {
+        usage_event_id: usageEventId,
+        ledger_anchor: ledgerAnchor ?? null,
+        timestamp_attestation: options.timestampAttestation ?? null
+      } : {}),
       key_id: signer.keyId,
       verification_endpoint: options.verificationEndpoint ?? null,
       extensions: {}
@@ -547,9 +974,41 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
   const nonceTracker = options.nonceTracker ?? null;
   const watermarkStatus = options.watermarkStatus ?? "not_applicable";
   const requireWatermarkCheck = options.requireWatermarkCheck ?? false;
+  const claimedComplianceLevel = options.claimedComplianceLevel ?? null;
+  const requiredComplianceLevel = options.requiredComplianceLevel ?? 1;
+  const watermarkRequiredAtOrAbove = options.watermarkRequiredAtOrAbove ?? 2;
   const watermarkExtractor = typeof options.extractWatermark === "function"
     ? options.extractWatermark
     : null;
+  const requireIdentity = options.requireIdentity ?? false;
+  const trustedVerifierOrigins = options.trustedVerifierOrigins ?? null;
+  const expectedSessionPublicKey = options.expectedSessionPublicKey ?? null;
+  const expectedSessionId = options.expectedSessionId ?? null;
+  const expectedIdentityNonce = options.expectedIdentityNonce ?? null;
+  const verifyDeviceAttestation = typeof options.verifyDeviceAttestation === "function"
+    ? options.verifyDeviceAttestation
+    : null;
+  const revocationStatusResolver = typeof options.getKeyRevocationStatus === "function"
+    ? options.getKeyRevocationStatus
+    : null;
+  const timestampAttestationVerifier = typeof options.verifyTimestampAttestation === "function"
+    ? options.verifyTimestampAttestation
+    : null;
+
+  const normalizeComplianceLevelLocal = (value, label, { allowNull = false } = {}) => {
+    if (value == null) {
+      if (allowNull) {
+        return null;
+      }
+      throw new TypeError(`${label} must be an integer in range [1,3].`);
+    }
+
+    if (!Number.isInteger(value) || value < 1 || value > 3) {
+      throw new TypeError(`${label} must be an integer in range [1,3].`);
+    }
+
+    return value;
+  };
 
   const fail = (reason, details = {}, checks = {}) => {
     const protocolValid = checks.protocol_valid ?? false;
@@ -566,6 +1025,11 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
       metadata_consistent: metadataConsistent,
       protocol_valid: protocolValid,
       trust_level: "LOW",
+      revocation: {
+        current_key_status: KEY_STATUS.UNKNOWN,
+        historical_validity: HISTORICAL_VALIDITY.UNKNOWN,
+        revocation_record: null
+      },
       details
     };
   };
@@ -575,15 +1039,49 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
   }
 
   if (requireProtocolVersion) {
-    if (proofPackage.protocol_version !== "1.0") {
+    if (proofPackage.protocol_version !== "2.0") {
       return fail("INVALID_PROTOCOL_VERSION", {
-        expected: "1.0",
+        expected: "2.0",
         received: proofPackage.protocol_version ?? null
       });
     }
   }
 
   try {
+    const normalizedClaimedComplianceLevel = normalizeComplianceLevelLocal(claimedComplianceLevel, "claimedComplianceLevel", {
+      allowNull: true
+    });
+    const normalizedRequiredComplianceLevel = normalizeComplianceLevelLocal(requiredComplianceLevel, "requiredComplianceLevel");
+    const normalizedWatermarkRequiredAtOrAbove = normalizeComplianceLevelLocal(
+      watermarkRequiredAtOrAbove,
+      "watermarkRequiredAtOrAbove"
+    );
+    const proofType = normalizeProofType(proofPackage.proof_type);
+    const proofComplianceLevel = normalizeComplianceLevel(proofPackage.compliance_level);
+
+    if (normalizedClaimedComplianceLevel != null && normalizedClaimedComplianceLevel !== proofComplianceLevel) {
+      return fail("COMPLIANCE_LEVEL_MISMATCH", {
+        expected: normalizedClaimedComplianceLevel,
+        received: proofComplianceLevel
+      }, {
+        protocol_valid: true
+      });
+    }
+
+    if (proofComplianceLevel < normalizedRequiredComplianceLevel) {
+      return fail("COMPLIANCE_LEVEL_TOO_LOW", {
+        required_compliance_level: normalizedRequiredComplianceLevel,
+        received_compliance_level: proofComplianceLevel
+      }, {
+        protocol_valid: true
+      });
+    }
+
+    const policyComplianceLevel = normalizedRequiredComplianceLevel;
+    const mustHavePresentWatermark = proofType === PROOF_TYPES.GENERATED
+      && proofComplianceLevel >= normalizedWatermarkRequiredAtOrAbove
+      && (requireWatermarkCheck || policyComplianceLevel >= normalizedWatermarkRequiredAtOrAbove);
+
     const canonicalAudio = getCanonicalAudioBytes(audioBuffer);
     const computedAudioHash = crypto.createHash("sha256").update(canonicalAudio).digest();
     const expectedAudioHash = decodeHex(proofPackage.audio_hash, "audio_hash");
@@ -643,17 +1141,79 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
       });
     }
 
+    let verifiedIdentity = null;
+
+    if (proofPackage.identity != null) {
+      const identityVerification = verifyIdentityAssertion(proofPackage.identity, {
+        nowTimestamp,
+        trustedVerifierOrigins,
+        expectedSessionPublicKey,
+        expectedSessionId,
+        expectedNonce: expectedIdentityNonce,
+        verifyDeviceAttestation
+      });
+
+      if (!identityVerification.ok) {
+        return fail(identityVerification.reason, identityVerification.details, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: false
+        });
+      }
+
+      verifiedIdentity = identityVerification.details;
+    } else if (requireIdentity) {
+      return fail("IDENTITY_REQUIRED", {
+        error: "identity is mandatory in this verification profile"
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: false
+      });
+    }
+
     const signatureValue = typeof proofPackage.signature === "object"
       ? proofPackage.signature.value
       : proofPackage.signature;
     const signature = decodeProofBytes(signatureValue, "signature", 64);
+    const signatureAlgorithm = typeof proofPackage.signature === "object"
+      ? proofPackage.signature.algorithm
+      : null;
+
+    if (signatureAlgorithm !== "Ed25519") {
+      return fail("INVALID_SIGNATURE_ALGORITHM", {
+        expected: "Ed25519",
+        received: signatureAlgorithm ?? null
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true
+      });
+    }
 
     const watermarkHex = proofPackage.watermark_hex;
     const watermarkPayloadField = proofPackage.watermark_payload;
     let watermarkPayload;
     let effectiveWatermarkStatus = watermarkStatus;
+    const watermarkDeclared = typeof watermarkHex === "string" || typeof watermarkPayloadField === "string";
 
-    if (typeof watermarkHex === "string" && typeof watermarkPayloadField === "string") {
+    if (proofComplianceLevel === 1 && (
+      watermarkDeclared
+      || proofPackage.watermark_format_version != null
+      || proofPackage.usage_event_id != null
+      || proofPackage.ledger_anchor != null
+      || proofPackage.timestamp_attestation != null
+    )) {
+      return fail("LEVEL1_AMBIGUOUS_FIELDS", {
+        error: "Level 1 proofs MUST NOT carry watermark, ledger, or attestation fields."
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true
+      });
+    }
+
+    if (watermarkDeclared && typeof watermarkHex === "string" && typeof watermarkPayloadField === "string") {
       const fromHex = decodeProofBytes(watermarkHex, "watermark_hex", 8);
       const fromPayload = decodeProofBytes(watermarkPayloadField, "watermark_payload", 8);
 
@@ -668,11 +1228,14 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
       }
 
       watermarkPayload = fromHex;
-    } else {
+    } else if (watermarkDeclared) {
       watermarkPayload = decodeProofBytes(watermarkHex ?? watermarkPayloadField, "watermark_payload", 8);
+    } else {
+      watermarkPayload = null;
+      effectiveWatermarkStatus = "not_applicable";
     }
 
-    if (watermarkExtractor) {
+    if (watermarkExtractor && watermarkPayload) {
       try {
         const extraction = watermarkExtractor(audioBuffer, watermarkPayload);
         const extracted = extraction && typeof extraction.then === "function"
@@ -691,9 +1254,28 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
       } catch {
         effectiveWatermarkStatus = "degraded";
       }
-    } else if (requireWatermarkCheck) {
-      return fail("WATERMARK_CHECK_REQUIRED", {
-        error: "watermark extraction is required but no extractor was provided"
+    }
+
+    if (proofType === PROOF_TYPES.GENERATED && proofComplianceLevel >= 2 && !watermarkPayload) {
+      return fail("GENERATED_WATERMARK_REQUIRED", {
+        error: "GENERATED proofs at compliance >= 2 MUST carry watermark fields."
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true
+      });
+    }
+
+    if (proofType === PROOF_TYPES.RECORDED && !watermarkPayload) {
+      effectiveWatermarkStatus = "not_applicable";
+    }
+
+    if (mustHavePresentWatermark && effectiveWatermarkStatus !== "present") {
+      return fail("WATERMARK_REQUIRED_NOT_PRESENT", {
+        error: "watermark evidence is mandatory for this compliance policy",
+        policy_compliance_level: policyComplianceLevel,
+        claimed_compliance_level: proofComplianceLevel,
+        watermark_status: effectiveWatermarkStatus
       }, {
         protocol_valid: true,
         metadata_consistent: true,
@@ -756,31 +1338,217 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
     }
 
     const messageDigest = buildSignatureMessageDigest({
+      proofType,
+      complianceLevel: proofComplianceLevel,
       watermarkPayload,
+      identity: proofPackage.identity ?? null,
       audioHash: expectedAudioHash,
       timestamp,
       canonicalMetadata
     });
     const valid = crypto.verify(null, messageDigest, publicKey, signature);
     const cryptographicValid = valid;
-    const trustLevel = cryptographicValid
-      ? (effectiveWatermarkStatus === "present" ? "HIGH" : "PARTIAL")
-      : "LOW";
+
+    if (!cryptographicValid) {
+      return {
+        ok: false,
+        reason: "INVALID_SIGNATURE",
+        cryptographic_valid: false,
+        watermark: effectiveWatermarkStatus,
+        identity_valid: true,
+        metadata_consistent: true,
+        protocol_valid: true,
+        trust_level: "LOW",
+        details: {
+          mode: "v2.0",
+          proof_type: proofType,
+          compliance_level: proofComplianceLevel,
+          identity: verifiedIdentity
+        }
+      };
+    }
+
+    if (proofComplianceLevel >= 3) {
+      if (!proofPackage.timestamp_attestation || typeof proofPackage.timestamp_attestation !== "object") {
+        return fail("TIMESTAMP_ATTESTATION_REQUIRED", {
+          error: "Level 3 proofs MUST include timestamp_attestation."
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      if (!proofPackage.usage_event_id || !proofPackage.ledger_anchor) {
+        return fail("LEVEL3_LEDGER_REFERENCE_REQUIRED", {
+          error: "Level 3 proofs MUST include usage_event_id and ledger_anchor."
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      const attestation = proofPackage.timestamp_attestation;
+
+      if (typeof attestation.type !== "string" || attestation.type.length === 0) {
+        return fail("TIMESTAMP_ATTESTATION_INVALID", {
+          error: "timestamp_attestation.type is required."
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      if (!Number.isInteger(attestation.attested_at) || attestation.attested_at < 0) {
+        return fail("TIMESTAMP_ATTESTATION_INVALID", {
+          error: "timestamp_attestation.attested_at must be a non-negative integer."
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      if (typeof attestation.digest !== "string" || attestation.digest.length === 0) {
+        return fail("TIMESTAMP_ATTESTATION_INVALID", {
+          error: "timestamp_attestation.digest is required."
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      const expectedAttestationDigest = getTimestampAttestationReceiptDigest(proofPackage);
+
+      if (attestation.digest.toLowerCase() !== expectedAttestationDigest.toLowerCase()) {
+        return fail("TIMESTAMP_ATTESTATION_DIGEST_MISMATCH", {
+          expected_digest: expectedAttestationDigest,
+          received_digest: attestation.digest
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      if (attestation.attested_at < timestamp) {
+        return fail("TIMESTAMP_ATTESTATION_INCONSISTENT", {
+          error: "timestamp_attestation.attested_at must not predate proof timestamp.",
+          proof_timestamp: timestamp,
+          attested_at: attestation.attested_at
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      if (!timestampAttestationVerifier) {
+        return fail("TIMESTAMP_ATTESTATION_VERIFIER_REQUIRED", {
+          error: "Level 3 verification requires a timestamp attestation verifier."
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+
+      const attestationVerification = timestampAttestationVerifier(attestation, {
+        proofPackage,
+        expectedDigest: expectedAttestationDigest,
+        receipt: buildTimestampAttestationReceipt(proofPackage)
+      });
+
+      if (!attestationVerification || attestationVerification.ok !== true) {
+        return fail("TIMESTAMP_ATTESTATION_VERIFICATION_FAILED", {
+          error: attestationVerification?.reason ?? "timestamp attestation verification failed"
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true,
+          cryptographic_valid: true
+        });
+      }
+    }
+
+    if (proofType === PROOF_TYPES.RECORDED && watermarkPayload && effectiveWatermarkStatus !== "present") {
+      return fail("RECORDED_OPTIONAL_WATERMARK_INVALID", {
+        error: "Optional RECORDED watermark was declared but did not validate.",
+        watermark_status: effectiveWatermarkStatus
+      }, {
+        protocol_valid: true,
+        metadata_consistent: true,
+        identity_valid: true,
+        cryptographic_valid: true
+      });
+    }
+
+    const trustLevel = proofComplianceLevel === 1 ? "PARTIAL" : "HIGH";
+    const revocationRecord = revocationStatusResolver
+      ? revocationStatusResolver({
+        keyId: proofPackage.key_id ?? null,
+        creatorId: derivedCreatorIdHex,
+        publicKey: proofPackage.public_key
+      }) ?? null
+      : null;
+    const attestedTimestamp = Number.isInteger(proofPackage.timestamp_attestation?.attested_at)
+      ? proofPackage.timestamp_attestation.attested_at
+      : null;
+
+    let currentKeyStatus = KEY_STATUS.UNKNOWN;
+    let historicalValidity = HISTORICAL_VALIDITY.UNKNOWN;
+
+    if (!revocationStatusResolver) {
+      currentKeyStatus = KEY_STATUS.UNKNOWN;
+      historicalValidity = HISTORICAL_VALIDITY.UNKNOWN;
+    } else if (!revocationRecord) {
+      currentKeyStatus = KEY_STATUS.ACTIVE;
+      historicalValidity = HISTORICAL_VALIDITY.NO_REVOCATION_RECORDED;
+    } else {
+      currentKeyStatus = revocationRecord.revoked_at <= nowTimestamp ? KEY_STATUS.REVOKED : KEY_STATUS.ACTIVE;
+
+      if (attestedTimestamp == null) {
+        historicalValidity = HISTORICAL_VALIDITY.INDETERMINATE_UNATTESTED;
+      } else if (attestedTimestamp < revocationRecord.revoked_at) {
+        historicalValidity = HISTORICAL_VALIDITY.VALID_AT_ATTESTED_TIME;
+      } else {
+        historicalValidity = HISTORICAL_VALIDITY.REVOKED_AT_ATTESTED_TIME;
+      }
+    }
 
     return {
-      ok: cryptographicValid,
-      reason: cryptographicValid ? "VALID" : "INVALID_SIGNATURE",
-      cryptographic_valid: cryptographicValid,
+      ok: true,
+      reason: "VALID",
+      cryptographic_valid: true,
       watermark: effectiveWatermarkStatus,
       identity_valid: true,
       metadata_consistent: true,
       protocol_valid: true,
       trust_level: trustLevel,
+      revocation: {
+        current_key_status: currentKeyStatus,
+        historical_validity: historicalValidity,
+        revocation_record: revocationRecord
+      },
       details: {
-        mode: "v1.0",
+        mode: "v2.0",
+        proof_type: proofType,
+        compliance_level: proofComplianceLevel,
         audioHash: computedAudioHash.toString("hex"),
         messageDigest: messageDigest.toString("hex"),
-        creator_id: derivedCreatorIdHex
+        creator_id: derivedCreatorIdHex,
+        identity: verifiedIdentity
       }
     };
   } catch (error) {
