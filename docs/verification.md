@@ -23,11 +23,25 @@ The protocol-defined verification sequence is:
 5. decode `watermark_payload` when declared,
 6. attempt watermark extraction when audio evidence is present and watermark is declared,
 7. compare extracted payload to the Proof Package payload when extraction succeeds,
-8. reconstruct `canonical_metadata`,
+8. reconstruct `canonical_metadata` — in the session-based model this includes `session_id`, `actor_id`, and `inference_metadata` when present,
 9. reconstruct the deterministic signature message,
 10. verify the Ed25519 signature,
 11. validate timestamp and ledger state when required,
 12. optionally invoke the Forensic Detection Layer if watermark extraction fails or is inconclusive.
+
+### Session Context in Verification
+
+When the proof was issued with session and inference context, the following fields are embedded inside `canonical_metadata` (and therefore inside the signed message digest):
+
+- `session_id` — identifies the `RecordingSession` active at proof issuance
+- `actor_id` — wallet or identity reference for the voice actor
+- `inference_metadata.model_id` — the AI model that generated the audio
+- `inference_metadata.input_reference` — event ID of the source `RECORDED` audio
+- `inference_metadata.input_verified` — whether the input audio passed system verification
+
+A verifier can confirm these fields did not change after signing: any alteration of `session_id`, `actor_id`, or `inference_metadata` inside `canonical_metadata` invalidates the Ed25519 signature.
+
+Note that `RecordingSession` state is server-local. A verifier can confirm the session-related fields in the signed proof, but cannot independently look up the session unless the verifying server has access to the same `RecordingSessionStore`.
 
 ## Verification Outcomes
 
@@ -61,6 +75,11 @@ A valid signature proves that the holder of the private key corresponding to the
 When an `identity` object is present, the verifier validates it independently before accepting the proof as identity-bound.
 
 Identity validation does not replace artifact signature validation. It binds a QR-authorized device session to the proof context.
+
+VRI v2.0 has two session-related concepts. Both may be present in a proof:
+
+- **IdentitySession** (`proof_package.identity`): device-level QR/Secure-Enclave authorization, validated via the identity-layer protocol. See [identity-layer.md](identity-layer.md).
+- **RecordingSession** (`canonical_metadata.session_id`): actor-context entity embedded inside the signed metadata. No separate validation step — it is covered by the artifact signature.
 
 ## Ledger Validation
 

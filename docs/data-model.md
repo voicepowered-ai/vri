@@ -99,6 +99,50 @@ CREATE TABLE audit_log (
 
 ---
 
+## RecordingSession Entity
+
+`RecordingSession` is a process-level entity (not a SQL table) managed by `RecordingSessionStore` in the Node reference server. It links every generated audio artifact to a real-world recording context and actor identity.
+
+### Shape
+
+```js
+{
+  session_id: "rsess_<uuid>",           // unique session identifier
+  actor_id: "wallet_...",               // voice actor wallet or identity reference
+  studio_id: "studio_nyc_01",           // optional studio/room context
+  start_time: "2026-04-04T00:00:00.000Z", // ISO 8601 session start
+  verification_method: "qr_scan" | "manual",
+  session_verified: true,               // true ONLY for qr_scan sessions
+  status: "ACTIVE" | "EXPIRED" | "CLOSED",
+  created_at: 1743800000                // Unix seconds
+}
+```
+
+### Lifecycle
+
+1. Actor activates session via `POST /recording-sessions` (optionally with `from_qr: true` for QR-scan flow).
+2. Session is returned with `session_id`; pass it to `/register` or `/register-export` as `session_id`.
+3. Server optionally enforces `session_verified: true` (via `requireVerifiedSession`).
+4. Sessions are file-backed when `recordingSessionStoreFilePath` is provided.
+
+### InferenceMetadata Shape
+
+`InferenceMetadata` captures AI provenance and is embedded inside the signed proof:
+
+```js
+{
+  model_id: "tts-v3",             // REQUIRED — AI model identifier (signed)
+  model_provider: "openai",       // optional
+  input_reference: "evt_...",     // ledger event ID of the source RECORDED audio
+  input_verified: true,           // set by server when input_reference passes gate
+  input_audio_hash: "0x..."       // SHA-256 of the source audio (set by server)
+}
+```
+
+`session_id`, `actor_id`, and `inference_metadata` are merged into `canonical_metadata` before the Ed25519 signature is computed, making them cryptographically tamper-evident.
+
+---
+
 ## Relationships
 
 ```

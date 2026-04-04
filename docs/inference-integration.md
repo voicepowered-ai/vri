@@ -1,8 +1,71 @@
 # VRI Inference Integration: Embedding Ownership Into Generation
 
-This document defines the technical architecture for integrating Voice Rights Infrastructure (VRI) directly into AI text-to-speech (TTS) inference pipelines, ensuring that every audio generation is automatically watermarked, signed, and registered.
+This document defines the technical architecture for integrating Voice Rights Infrastructure (VRI) directly into AI text-to-speech (TTS) inference pipelines, ensuring that every audio generation is automatically watermarked, signed, and registered with full actor identity and AI provenance.
 
-**Key Principle**: VRI operates at generation time, not distribution time. The watermark is embedded as the final step of the inference process.
+**Key Principle**: VRI operates at generation time, not distribution time. The watermark is embedded as the final step of the inference process. In the session-based model, the actor's identity and the recording context are cryptographically bound to the proof _before_ inference begins.
+
+---
+
+## 0. Session-Based Pre-Inference Verification Gates
+
+Before a GENERATED proof is accepted by the API, two optional but recommended enforcement gates can be activated.
+
+### Gate 1: Session Verification (`requireVerifiedSession`)
+
+The actor must have an active, QR-verified `RecordingSession` before any inference-linked registration is accepted.
+
+```
+1. Actor scans QR code in the studio app
+2. Client calls POST /recording-sessions with { actor_id, from_qr: true }
+3. Server returns { session_id: "rsess_...", session_verified: true }
+4. Inference client includes session_id in every POST /register call
+5. Server rejects any call without a valid verified session
+```
+
+**Error codes** (returned as `400`):
+
+| Code | Meaning |
+|---|---|
+| `session_required` | No `session_id` was provided |
+| `recording_session_not_found` | `session_id` does not exist |
+| `session_not_verified` | Session exists but was not QR-activated |
+| `recording_session_invalid` | Session is expired or closed |
+
+### Gate 2: Input Verification (`requireInputVerification`)
+
+The source audio used by the TTS model must have been registered as a `RECORDED` proof within this system. This prevents the use of audio captured outside the trust boundary as TTS input.
+
+```
+1. Voice actor records reference audio in-studio
+2. Studio client calls POST /register-recorded with the audio
+3. Server returns { ledger_event: { event_id: "evt_..." } }
+4. At inference time, client passes inferenceMetadata.input_reference = "evt_..."
+5. Server looks up "evt_..." in the ledger; rejects if not found or not RECORDED type
+6. If valid, server sets input_verified: true and input_audio_hash in the signed proof
+```
+
+**Error codes** (returned as `400`):
+
+| Code | Meaning |
+|---|---|
+| `inference_metadata_required` | No `inferenceMetadata.model_id` provided |
+| `input_reference_required` | No `input_reference` provided |
+| `input_reference_not_found` | Event not found in ledger |
+| `input_reference_not_recorded` | Event is not of type `RECORDED` |
+
+### Combined Gate Enforcement
+
+When both gates are enabled (`requireVerifiedSession: true, requireInputVerification: true`), the full chain attestation is:
+
+```
+Actor (QR) → RecordingSession (verified) ─────────┐
+                                                    ├──→ GENERATED proof (signed)
+RECORDED audio (same system) → input_reference ───┘
+
+Proof signs: actor_id + session_id + model_id + input_reference + input_audio_hash
+```
+
+This allows any third-party verifier to independently confirm: **who** generated the audio, **in which session**, **using which model**, and **from which source recording**.
 
 ---
 
@@ -16,12 +79,18 @@ VRI integration transforms a traditional TTS pipeline:
 User Input → Model → Audio Output → Copy/Share
 ```
 
-Into a rights-native pipeline:
+Into a rights-native, session-traceable pipeline:
 
 ```
+QR Scan → Session Activation
+    ↓
+Source Audio Registration (RECORDED)
+    ↓
+[Gate 1: Session Verified?] + [Gate 2: Input from this system?]
+    ↓
 User Input → Model → Watermark Daemon → Signing Service → Ledger Registration → Output
              └──────────────────────────────────────────────────────────────────────┘
-                              VRI Inference Integrated
+                      VRI Inference Integrated (session + inference metadata signed)
 ```
 
 ### 1.2 Integration Points
@@ -249,8 +318,11 @@ class VRIInferenceAdapter {
    * Wrap any TTS inference function with VRI processing.
    * 
    * @param {Function} inferenceFn - Async function that returns audio buffer
-   * @param {Object} options - Model, voice_id, metadata
-   * @returns {Promise<{audio, proof_package, duration_ms}>}
+   * @param {Object} options - Model, voice_id, metadata, session context
+   * @param {string} [options.session_id]        - RecordingSession ID (required when requireVerifiedSession is on)
+   * @param {string} [options.actor_id]          - Voice actor wallet/identity reference
+   * @param {object} [options.inferenceMetadata] - AI provenance: { model_id, model_provider, input_reference }
+   * @returns {Promise<{audio, proof_package, session_id, inference_metadata, duration_ms}>}
    */
   async wrapInference(inferenceFn, options = {}) {
     const startTime = Date.now();

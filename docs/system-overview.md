@@ -6,84 +6,156 @@ This document provides a high-level architectural view of VRI, including system 
 
 ---
 
-## Architecture Diagram
+## Architecture Diagram (Legacy)
+
+> The diagram below pre-dates the session-based model. See the updated diagram after this section.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                  External TTS Service                       │
-│           (OpenAI, ElevenLabs, Google, Custom)             │
-└────────────────────────┬────────────────────────────────────┘
-                         │ POST /generate
-                         v
-┌─────────────────────────────────────────────────────────────┐
-│                   API Gateway                               │
-│  • Authentication (API key, OAuth2)                         │
-│  • Rate limiting (per-user, per-IP)                         │
-│  • Request validation & routing                             │
-└────────┬───────────────────────────────────────┬────────────┘
-         │ POST /generate                        │ POST /verify
-         v                                        v
-    ┌──────────────────┐              ┌──────────────────┐
-    │ Inference Adapter│              │  Verification    │
-    │                  │              │    Service       │
-    │ • Intercepts TTS │              │                  │
-    │   output         │              │ • Extract WM     │
-    │ • Triggers       │              │ • Verify sig     │
-    │   watermarking   │              │ • Lookup signer  │
-    │ • Queues task   │              │ • Log evidence   │
-    └────────┬─────────┘              │ • Return result  │
-             │                        └────────┬─────────┘
-             v                                 │
-    ┌──────────────────────────────────┐      │
-    │  Watermark Daemon (Worker Pool)  │      │
-    │                                  │      │
-    │ • Receive raw audio              │      │
-    │ • Extract acoustic features      │      │
-    │ • Inject watermark (LDPC codes)  │      │
-    │ • Preserve quality (SNR > 40dB)  │      │
-    │ • Output watermarked audio       │      │
-    └────────┬─────────────────────────┘      │
-             │                                 │
-             v                                 │
-    ┌──────────────────┐                      │
-    │ Signing Service  │                      │
-    │                  │                      v
-    │ • Hash WM        │        ┌─────────────────────────┐
-    │ • EdDSA sign     │        │  Fingerprint Service    │
-    │ • Verify sig     │        │  (Forensic Path)        │
-    │ • Attach key     │        │                         │
-    └────────┬─────────┘        │ • Extract MFCC          │
-             │                  │ • Hash-chain features   │
-             v                  │ • DB lookup             │
-   ┌────────────────┐           └────────┬────────────────┘
-   │ CDN / Storage  │                    │
-   │                │                    v
-   │ • S3 / GCS     │        ┌───────────────────────────┐
-   │ • Signed URLs  │        │  Ledger Service          │
-   │ • Cache header │        │  (Immutable Log)         │
-   └────────────────┘        │                          │
-                             │ • Append evidence event  │
-                             │ • Hash-anchor to tree    │
-                             │ • Record verification    │
-                             │ • Prevent tampering      │
-                             └───────┬──────────────────┘
-                                     │
-                             ┌───────v──────────┐
-                             │ Hash Accumulator │
-                             │   (Blockchain)   │
-                             │                  │
-                             │ • Merkle tree    │
-                             │ • Periodic anchor│
-                             │ • Immutable proof│
-                             └──────────────────┘
+┌──────────────────────┐   QR Scan    ┌───────────────────────────┐
+│  Voice Actor         │ ──────────→  │  RecordingSessionStore    │
+│  (studio app)        │              │  (POST /recording-sessions)│
+└──────────────────────┘              │  session_verified: true   │
+         │                            └───────────┬───────────────┘
+         │ records source audio                   │ session_id
+         v                                        │
+┌──────────────────────┐              ┌───────────v───────────────┐
+│  POST /register-     │ ──────────→  │        API Gateway        │
+│  recorded            │  RECORDED    │  • Auth (API key)         │
+└──────────────────────┘  evt_id ─┐  │  • Rate limiting          │
+                                   │  │  • Gate 1: session_verified│
+                                   │  │  • Gate 2: input RECORDED  │
+                                   │  │  • Routing                │
+                                   │  └──────────┬────────────────┘
+                                   │             │ pass
+                                   │             v
+                                   │  ┌──────────────────────┐
+                                   │  │ Inference Adapter    │
+                                   │  │                      │
+                                   └──│ • input_reference =  │
+                                      │   evt_id (verified)  │
+┌─────────────────────────────────┐   │ • model_id signed    │
+│ External TTS Service            │   │ • actor_id signed    │
+│ (OpenAI, ElevenLabs, Custom)   │   │ • session_id signed  │
+└────────────────┬────────────────┘   └─────────┬────────────┘
+                 │                              │
+                 v                              v
+         ┌──────────────────────────────────────────┐
+         │  Watermark Daemon (Worker Pool)           │
+         │  • Inject watermark (LDPC codes)          │
+         │  • SNR > 40dB                             │
+         └────────────────────────┬─────────────────┘
+                                  │
+                                  v
+                        ┌──────────────────┐
+                        │ Signing Service  │
+                        │                  │
+                        │ • SHA-256 hash   │
+                        │ • EdDSA sign:    │
+                        │   hash +         │
+                        │   session_id +   │
+                        │   actor_id +     │
+                        │   inference_meta │
+                        └────────┬─────────┘
+                                 │
+                                 v
+                      ┌──────────────────────────┐
+                      │  Ledger Service           │
+                      │  (Immutable Log)          │
+                      │  • Append usage event     │
+                      │  • Hash-anchor to tree    │
+                      └───────────┬──────────────┘
+                                  │
+                         ┌────────v─────────┐
+                         │ Hash Accumulator │
+                         │  (Blockchain)    │
+                         │ • Merkle tree    │
+                         │ • Periodic anchor│
+                         └──────────────────┘
+```
 
-                             ┌──────────────────┐
-                             │   Audit Log      │
-                             │                  │
-                             │ • All operations │
-                             │ • Signed entries │
-                             │ • Tamper detect  │
-                             └──────────────────┘
+```
+Verification Path:
+  POST /verify-proof
+    → recompute hash (including session_id, actor_id, inference_metadata)
+    → verify Ed25519 signature
+    → check ledger inclusion
+    → return: who generated, in which session, with which model, from which source
+```
+---
+
+## Architecture Diagram (Session-Based Model)
+
+```
+┌──────────────────────┐   QR Scan
+│  Voice Actor         │ ─────────────────────────────────────────────────────┐
+│  (studio app)        │                                                      │
+└──────────────────────┘                                                      │
+         │                                                                    │
+         │ records source audio                                               v
+         v                                                   RecordingSessionStore
+   POST /register-recorded ─────────────────────────────→   (POST /recording-sessions)
+         │                                                   session_verified: true
+         │  returns: evt_id                                         │
+         │                                                          │ session_id
+         │                   ┌──────────────────────────────────────┘
+         │                   │
+         v                   v
+   ┌───────────────────────────────────────────────────────────┐
+   │                     API Gateway                           │
+   │  • Auth (API key)                                         │
+   │  • Rate limiting                                          │
+   │  • Gate 1: requireVerifiedSession -> session_verified?   │
+   │  • Gate 2: requireInputVerification -> input RECORDED?   │
+   │  • Routing                                                │
+   └────────────────────────────┬──────────────────────────────┘
+                                │ pass (session + input verified)
+                                v
+               ┌────────────────────────────────────┐
+               │         Inference Adapter          │
+               │  • input_reference = evt_id        │
+               │  • model_id, actor_id, session_id  │
+               │    all signed into proof           │
+               └────────────────┬───────────────────┘
+                                │
+           ┌────────────────────┘
+           │
+           v (audio from External TTS: OpenAI, ElevenLabs, Custom)
+   ┌───────────────────────────────────────┐
+   │   Watermark Daemon (Worker Pool)      │
+   │   Inject watermark (LDPC, SNR>40dB)  │
+   └────────────────────┬──────────────────┘
+                        │
+                        v
+              ┌─────────────────────────────────────┐
+              │         Signing Service              │
+              │  SHA-256 hash of:                    │
+              │    audio + session_id + actor_id +   │
+              │    inference_metadata                │
+              │  EdDSA sign -> proof_package         │
+              └─────────────────┬────────────────────┘
+                                │
+                                v
+                   ┌─────────────────────────┐
+                   │     Ledger Service      │
+                   │  Append usage event     │
+                   │  Hash-anchor to tree    │
+                   └─────────────┬───────────┘
+                                 │
+                        ┌────────v──────────┐
+                        │  Hash Accumulator │
+                        │  (Blockchain)     │
+                        │  Merkle / anchor  │
+                        └───────────────────┘
+```
+
+Verification path:
+
+```
+POST /verify-proof
+  -> recompute hash (includes session_id, actor_id, inference_metadata)
+  -> verify Ed25519 signature
+  -> check ledger inclusion
+  -> returns: who generated, which session, which model, which source audio
 ```
 
 ---

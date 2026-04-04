@@ -67,6 +67,8 @@ Collections used by default:
 - `POST /identity/challenges`
 - `POST /identity/redeem`
 - `GET /identity/sessions/:session_id`
+- `POST /recording-sessions` — create a new `RecordingSession` for session-based workflows
+- `GET /recording-sessions/:id` — retrieve a `RecordingSession` by ID
 - `POST /register` (requires user role if authenticated)
 - `POST /register-recorded` (requires user role if authenticated)
 - `POST /register-export` (requires user role if authenticated)
@@ -92,6 +94,7 @@ Collections used by default:
 The reference server can persist security-critical state across restarts:
 
 - `identitySessionStoreFilePath`: persists QR challenge/session state, used nonces, and consumed session ids.
+- `recordingSessionStoreFilePath`: persists `RecordingSession` state for session-based workflows. If omitted, sessions are process-local.
 - `revocationRegistryFilePath`: persists key revocation records used by `/key-revocations` and `/verify-proof`.
 - `nonceReplayStoreFilePath`: persists verifier replay observations for `creator_id + nonce` freshness enforcement.
 - `trustedTimestampAuthoritiesFilePath`: loads an auditable TSA trust policy from JSON at startup.
@@ -100,6 +103,15 @@ The reference server can persist security-critical state across restarts:
 - `openSslTimestampOptions`: enables a built-in RFC 3161 parser/validator adapter backed by the local `openssl` binary.
 
 If these options are omitted, the corresponding state remains process-local.
+
+## Server Enforcement Options (Session-Based Model)
+
+These options gate inference-related registrations with policy-level controls:
+
+- `requireVerifiedSession` (boolean, default `false`): when `true`, `POST /register` and `POST /register-export` (for `GENERATED` proofs) require the request to include a `session_id` referencing a QR-verified `RecordingSession` (`session_verified: true`). Requests without a valid verified session are rejected with `400 session_required` or `400 session_not_verified`.
+- `requireInputVerification` (boolean, default `false`): when `true`, the same routes additionally require `inferenceMetadata.input_reference` to point to a `RECORDED` ledger event from this system. Requests referencing audio that was not registered as `RECORDED` within this system are rejected with `400 input_reference_not_recorded`.
+
+These options may be combined. When both are enabled, a request must pass both gates before a `GENERATED` proof is issued.
 
 `openSslTimestampOptions` is intended for deployments that want to ingest raw `DER/base64` RFC 3161 tokens without writing a custom parser callback. Supported fields:
 
@@ -253,6 +265,13 @@ Registers an audio artifact, emits a `Proof Package`, and records a local `Usage
 | `complianceLevel` | integer | no | Defaults to `2` for `/register`. Level `3` requires `anchorNow: true` plus valid `timestampAttestation`. |
 | `timestampAttestation` | object | no | Level `3` input. Must validate against the canonical receipt digest under the configured TSA policy. |
 | `timestampToken` | string or object | no | Alternative Level `3` input. Raw RFC 3161 token accepted as a string or `{ encoding, data }` when a parser or `openSslTimestampOptions` is configured. |
+| `session_id` | string | no | ID of an existing `RecordingSession`. Required when `requireVerifiedSession` is enabled. |
+| `actor_id` | string | no | Wallet or identity reference for the voice actor. Included in the signed proof. |
+| `inferenceMetadata` | object | no | AI provenance payload. See sub-fields below. Required when `requireInputVerification` is enabled. |
+| `inferenceMetadata.model_id` | string | conditional | Required when `inferenceMetadata` is present. Identifies the AI model used for generation. Included in the signed proof. |
+| `inferenceMetadata.model_provider` | string | no | Optional AI model provider label. |
+| `inferenceMetadata.input_reference` | string | no | Ledger event ID of the source `RECORDED` audio used as model input. Required when `requireInputVerification` is enabled. |
+| `inferenceMetadata.input_verified` | boolean | no | Set to `true` by the server when `input_reference` passes system verification. Do not set this manually. |
 
 Strict session mode note:
 
@@ -298,7 +317,16 @@ Level 3 attestation input note:
       "request_id": "req_123456",
       "tenant_id": "org_789"
     },
-    "canonical_metadata": "{\"model_id\":\"tts-v3\",\"operation\":\"voice_synthesis\",\"request_id\":\"req_123456\",\"tenant_id\":\"org_789\"}",
+    "canonical_metadata": "{\"model_id\":\"tts-v3\",\"operation\":\"voice_synthesis\",\"request_id\":\"req_123456\",\"tenant_id\":\"org_789\",\"session_id\":\"rsess_...\",\"actor_id\":\"wallet_...\",\"inference_metadata\":{\"model_id\":\"tts-v3\",\"model_provider\":\"openai\",\"input_reference\":\"evt_...\",\"input_verified\":true}}",
+    "session_id": "rsess_...",
+    "actor_id": "wallet_...",
+    "inference_metadata": {
+      "model_id": "tts-v3",
+      "model_provider": "openai",
+      "input_reference": "evt_...",
+      "input_verified": true,
+      "input_audio_hash": "0x..."
+    },
     "identity": {
       "auth_method": "QR_SECURE_ENCLAVE",
       "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -309,6 +337,15 @@ Level 3 attestation input note:
     },
     "verification_endpoint": "http://localhost:8787/verify-proof",
     "extensions": {}
+  },
+  "session_id": "rsess_...",
+  "actor_id": "wallet_...",
+  "inference_metadata": {
+    "model_id": "tts-v3",
+    "model_provider": "openai",
+    "input_reference": "evt_...",
+    "input_verified": true,
+    "input_audio_hash": "0x..."
   },
   "proof_package": {
     "protocol_version": "2.0",
@@ -372,6 +409,96 @@ Notes:
 - The API still records an operational ledger event, but that event is returned outside the proof package and does not upgrade the proof to Level 3.
 - Level 3 requires both independent timestamp attestation and a concrete ledger anchor; otherwise registration fails closed.
 - Both `proofPackage` and `proof_package` are returned for convenience. They currently carry the same object.
+- `session_id`, `actor_id`, and `inference_metadata` are included inside `canonical_metadata` before signing, making them tamper-evident.
+- The top-level `session_id`, `actor_id`, and `inference_metadata` fields in the response are convenience copies of what is in the proof package.
+
+### Error Codes (Session / Inference Gates)
+
+These errors are returned as `400` with `{ "error": "<code>", "message": "..." }` when enforcement is active:
+
+| Code | Trigger |
+|---|---|
+| `session_required` | `requireVerifiedSession` is on but no `session_id` was provided |
+| `recording_session_not_found` | `session_id` does not exist in the store |
+| `session_not_verified` | Session exists but `session_verified === false` (not QR-activated) |
+| `recording_session_invalid` | Session is expired or closed |
+| `inference_metadata_required` | `requireInputVerification` is on but no `inferenceMetadata.model_id` was provided |
+| `input_reference_required` | `requireInputVerification` is on but no `input_reference` was provided |
+| `input_reference_not_found` | `input_reference` event does not exist in the ledger |
+| `input_reference_not_recorded` | Referenced event is not of type `RECORDED` |
+
+## POST /recording-sessions
+
+Creates a new `RecordingSession` that links a voice actor to a recording context. A session is required when `requireVerifiedSession` is enabled. Sessions activated via QR scan have `session_verified: true`.
+
+### Request (manual session)
+
+```json
+{
+  "actor_id": "wallet_...",
+  "studio_id": "studio_nyc_01",
+  "verification_method": "manual"
+}
+```
+
+### Request (QR-activated session)
+
+```json
+{
+  "actor_id": "wallet_...",
+  "studio_id": "studio_nyc_01",
+  "from_qr": true
+}
+```
+
+`from_qr: true` is equivalent to a QR-scan activation: the returned session has `session_verified: true`. Use this when the actor has scanned a QR code and you are forwarding that payload server-side.
+
+### Fields
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `actor_id` | string | yes | Wallet or identity reference for the voice actor |
+| `studio_id` | string | no | Optional studio or room identifier |
+| `verification_method` | string | no | `qr_scan` or `manual` (default: `manual`) |
+| `from_qr` | boolean | no | If `true`, overrides `verification_method` to `qr_scan` and sets `session_verified: true` |
+
+### Response (201)
+
+```json
+{
+  "session_id": "rsess_...",
+  "actor_id": "wallet_...",
+  "studio_id": "studio_nyc_01",
+  "start_time": "2026-04-04T00:00:00.000Z",
+  "verification_method": "qr_scan",
+  "session_verified": true,
+  "status": "ACTIVE",
+  "created_at": 1743800000
+}
+```
+
+The `session_id` from this response should be passed as `session_id` in subsequent `/register` or `/register-export` calls.
+
+## GET /recording-sessions/:id
+
+Retrieves a `RecordingSession` by its ID.
+
+### Response (200)
+
+```json
+{
+  "session_id": "rsess_...",
+  "actor_id": "wallet_...",
+  "studio_id": "studio_nyc_01",
+  "start_time": "2026-04-04T00:00:00.000Z",
+  "verification_method": "qr_scan",
+  "session_verified": true,
+  "status": "ACTIVE",
+  "created_at": 1743800000
+}
+```
+
+Returns `404` with `{ "error": "recording_session_not_found" }` if no session with that ID exists.
 
 ## POST /register-recorded
 

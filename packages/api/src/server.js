@@ -30,6 +30,12 @@ import {
   buildOpenSslTimestampVerifyArgs,
   parseRfc3161TokenWithOpenSsl
 } from "../../core/src/openssl-rfc3161.js";
+// Session-based verification model: RecordingSession store and helpers
+import {
+  RecordingSessionStore,
+  SESSION_VERIFICATION_METHODS,
+  validateRecordingSession
+} from "../../core/src/recording-session.js";
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
@@ -834,6 +840,12 @@ export function createServer(options = {}) {
   const revocationRegistry = options.revocationRegistry ?? createRevocationRegistry({
     filePath: options.revocationRegistryFilePath ?? null
   });
+  // Session-based verification model: store for RecordingSession entities.
+  // Each RecordingSession links audio registrations to a human actor identity
+  // and an optional studio context.
+  const recordingSessionStore = options.recordingSessionStore ?? new RecordingSessionStore({
+    filePath: options.recordingSessionStoreFilePath ?? null
+  });
   const trustedTimestampAuthorityConfig = options.trustedTimestampAuthoritiesCatalogFilePath
     ? loadTrustedTimestampAuthoritiesFromCatalog(
       options.trustedTimestampAuthoritiesCatalogFilePath,
@@ -881,6 +893,20 @@ export function createServer(options = {}) {
     : null;
   const identityChallengeTtlSeconds = Math.max(30, Number(options.identityChallengeTtlSeconds ?? 300) || 300);
   const trustedVerifierOrigins = options.trustedVerifierOrigins ?? [];
+  // Session-based verification model: enforcement options.
+  //
+  // requireVerifiedSession — when true, every GENERATED registration MUST supply a
+  //   session_id that resolves to a RecordingSession with session_verified === true
+  //   (i.e. activated via QR scan).  Registrations without a verified session are
+  //   rejected.  Defaults to false for backward compatibility.
+  //
+  // requireInputVerification — when true, every GENERATED registration MUST supply
+  //   inferenceMetadata.input_reference pointing to a RECORDED event already in the
+  //   ledger.  This ensures the source audio was recorded WITH THIS SYSTEM before it
+  //   was fed to the AI model.  Registrations whose source audio is unknown or comes
+  //   from outside the system are rejected.  Defaults to false for backward compat.
+  const requireVerifiedSession = options.requireVerifiedSession ?? false;
+  const requireInputVerification = options.requireInputVerification ?? false;
   let schedulerStarted = false;
 
   function ensureSchedulerStarted() {
@@ -900,7 +926,12 @@ export function createServer(options = {}) {
     proofType,
     requiredScope = null,
     defaultComplianceLevel = null,
-    requireExportLineage = false
+    requireExportLineage = false,
+    // Allows per-route override of the server-level enforcement flags.
+    // GENERATED routes pass enforceVerifiedSession/enforceInputVerification = true
+    // when the server option is active; RECORDED routes always bypass input check.
+    enforceVerifiedSession = false,
+    enforceInputVerification = false
   }) {
     ensureSchedulerStarted();
     if (keyData && !apiKeyManager.canPerform(keyData.role, "register")) {
@@ -947,6 +978,137 @@ export function createServer(options = {}) {
     const usageEventId = complianceLevel >= 3
       ? (typeof body.usageEventId === "string" && body.usageEventId.length > 0 ? body.usageEventId : `evt_${crypto.randomUUID()}`)
       : null;
+
+    // Session-based verification model: resolve session and inference context.
+    // session_id is optional (recommended); when provided the server looks up
+    // the RecordingSession to enrich the proof with actor identity.
+    let resolvedSessionId = typeof body.session_id === "string" && body.session_id.length > 0
+      ? body.session_id
+      : null;
+    let resolvedActorId = typeof body.actor_id === "string" && body.actor_id.length > 0
+      ? body.actor_id
+      : null;
+    // InferenceMetadata captures which AI model generated the audio.
+    let resolvedInferenceMetadata = null;
+
+    if (body.inferenceMetadata != null && typeof body.inferenceMetadata === "object" && !Array.isArray(body.inferenceMetadata)) {
+      resolvedInferenceMetadata = body.inferenceMetadata;
+    }
+
+    // -----------------------------------------------------------------------
+    // Session-based verification model: pre-inference session gate.
+    //
+    // Step 1 — If requireVerifiedSession is active for GENERATED registrations,
+    //   a session_id MUST be present and MUST resolve to a session that was
+    //   activated via QR scan (session_verified === true).  A manually-created
+    //   session is not sufficient because it carries no cryptographic proof of
+    //   the actor's presence at the recording context.
+    // -----------------------------------------------------------------------
+    if (enforceVerifiedSession) {
+      if (resolvedSessionId === null) {
+        return sendJson(response, 400, {
+          error: "session_required",
+          message: "A verified recording session (session_id) is required before inference registration."
+        });
+      }
+    }
+
+    if (resolvedSessionId !== null) {
+      const recordingSession = recordingSessionStore.get(resolvedSessionId);
+
+      if (!recordingSession) {
+        return sendJson(response, 400, {
+          error: "recording_session_not_found",
+          session_id: resolvedSessionId
+        });
+      }
+
+      const sessionValidation = validateRecordingSession(recordingSession);
+
+      if (!sessionValidation.ok) {
+        return sendJson(response, 400, {
+          error: "recording_session_invalid",
+          reason: sessionValidation.error
+        });
+      }
+
+      // Enforce verified session: the session must have been activated via QR
+      // (session_verified === true), providing cryptographic binding to
+      // the actor's secure enclave.  Manually-created sessions are rejected.
+      if (enforceVerifiedSession && !recordingSession.session_verified) {
+        return sendJson(response, 400, {
+          error: "session_not_verified",
+          message: "The recording session was not activated via QR scan. Only QR-verified sessions are accepted for inference registration.",
+          session_id: resolvedSessionId
+        });
+      }
+
+      // Use the session's actor_id if the caller didn't supply one explicitly
+      if (resolvedActorId === null && recordingSession.actor_id) {
+        resolvedActorId = recordingSession.actor_id;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Session-based verification model: pre-inference input gate.
+    //
+    // Step 2 — If requireInputVerification is active for GENERATED registrations,
+    //   the source audio that was fed to the AI model MUST have been previously
+    //   registered in this system as a RECORDED event.  The caller must supply
+    //   inferenceMetadata.input_reference with that event's ID.
+    //
+    //   The server resolves the event from the ledger and:
+    //     - rejects if the event does not exist
+    //     - rejects if the event is not of proof_type RECORDED
+    //     - sets input_verified = true on the proof when all checks pass
+    //
+    //   This prevents inference proofs from being created for audio that was
+    //   recorded outside this system.
+    // -----------------------------------------------------------------------
+    if (enforceInputVerification) {
+      if (!resolvedInferenceMetadata || typeof resolvedInferenceMetadata.model_id !== "string" || resolvedInferenceMetadata.model_id.length === 0) {
+        return sendJson(response, 400, {
+          error: "inference_metadata_required",
+          message: "inferenceMetadata with model_id is required when input verification is enforced."
+        });
+      }
+
+      const inputRef = resolvedInferenceMetadata.input_reference;
+
+      if (typeof inputRef !== "string" || inputRef.length === 0) {
+        return sendJson(response, 400, {
+          error: "input_reference_required",
+          message: "inferenceMetadata.input_reference must point to a RECORDED event in this system. Audio recorded outside this system cannot be used for inference registration."
+        });
+      }
+
+      const sourceEvent = await ledger.getEvent(inputRef);
+
+      if (!sourceEvent) {
+        return sendJson(response, 400, {
+          error: "input_reference_not_found",
+          message: "inferenceMetadata.input_reference does not reference a known ledger event. The source audio must be registered in this system before inference.",
+          input_reference: inputRef
+        });
+      }
+
+      if (sourceEvent.proof_type !== PROOF_TYPES.RECORDED) {
+        return sendJson(response, 400, {
+          error: "input_reference_not_recorded",
+          message: `The referenced source event is of type '${sourceEvent.proof_type}', but only RECORDED source audio is accepted. The input audio must have been captured and registered with this system.`,
+          input_reference: inputRef,
+          source_proof_type: sourceEvent.proof_type
+        });
+      }
+
+      // All checks passed: mark the input as verified and carry the audio hash
+      // of the source into the proof for full traceability.
+      resolvedInferenceMetadata = {
+        ...resolvedInferenceMetadata,
+        input_verified: true,
+        input_audio_hash: sourceEvent.audio_hash ?? null
+      };
+    }
 
     if (includeWatermark && complianceLevel === 1) {
       return sendJson(response, 400, { error: "Level 1 proofs MUST NOT include watermark fields." });
@@ -1009,7 +1171,11 @@ export function createServer(options = {}) {
       usageEventId,
       timestampAttestation: null,
       verificationEndpoint: body.verificationEndpoint ?? defaultVerificationEndpoint,
-      keyManager
+      keyManager,
+      // Session-based verification model: propagate resolved session context
+      session_id: resolvedSessionId,
+      actor_id: resolvedActorId,
+      inferenceMetadata: resolvedInferenceMetadata
     });
     stopRegisterVoice();
 
@@ -1045,7 +1211,9 @@ export function createServer(options = {}) {
     const stopLedgerAppend = perfProfiler.start("ledger.append_usage_event_ms");
     const ledgerEvent = await ledger.appendUsageEvent(registration.proofPackage, {
       provider: body.provider ?? body.metadata?.provider ?? "local",
-      model: body.model ?? body.metadata?.model_id ?? "unknown",
+      // Session-based verification model: prefer explicit inferenceMetadata.model_id
+      // for AI traceability in the ledger event, falling back to legacy fields
+      model: resolvedInferenceMetadata?.model_id ?? body.model ?? body.metadata?.model_id ?? "unknown",
       anchorNow: body.anchorNow ?? false
     });
     stopLedgerAppend();
@@ -1305,12 +1473,63 @@ export function createServer(options = {}) {
         return sendJson(response, 200, org);
       }
 
+      // Session-based verification model: create and look up RecordingSession entities.
+      // A RecordingSession binds audio registrations to a human actor (actor_id / wallet)
+      // and an optional studio context, making every proof traceable to a real identity.
+
+      if (request.method === "POST" && request.url === "/recording-sessions") {
+        const body = await readJson(request, maxRequestBytes);
+
+        if (typeof body.actor_id !== "string" || body.actor_id.length === 0) {
+          return sendJson(response, 400, { error: "actor_id is required" });
+        }
+
+        let session;
+
+        try {
+          if (body.from_qr === true) {
+            // QR-based activation: actor scanned a studio QR code.
+            // session_verified will be true on the resulting session.
+            session = recordingSessionStore.createFromQR(body);
+          } else {
+            session = recordingSessionStore.create({
+              actor_id: body.actor_id,
+              studio_id: body.studio_id ?? null,
+              verification_method: body.verification_method ?? SESSION_VERIFICATION_METHODS.MANUAL
+            });
+          }
+        } catch (error) {
+          return sendJson(response, 400, { error: error.message });
+        }
+
+        return sendJson(response, 201, session);
+      }
+
+      if (request.method === "GET" && request.url.startsWith("/recording-sessions/")) {
+        const sessionId = decodeURIComponent(request.url.slice("/recording-sessions/".length));
+
+        if (!sessionId) {
+          return sendJson(response, 400, { error: "session_id is required" });
+        }
+
+        const session = recordingSessionStore.get(sessionId);
+
+        if (!session) {
+          return sendJson(response, 404, { error: "recording_session_not_found" });
+        }
+
+        return sendJson(response, 200, session);
+      }
+
       if (request.method === "POST" && request.url === "/register") {
         const body = await readJson(request, maxRequestBytes);
         return handleRegistration(body, response, keyData, {
           proofType: PROOF_TYPES.GENERATED,
           requiredScope: registerRequireAuthorizedIdentitySession ? SESSION_SCOPES.GENERATION : null,
-          defaultComplianceLevel: 2
+          defaultComplianceLevel: 2,
+          // Propagate server-level enforcement flags to GENERATED registrations
+          enforceVerifiedSession: requireVerifiedSession,
+          enforceInputVerification: requireInputVerification
         });
       }
 
@@ -1331,11 +1550,17 @@ export function createServer(options = {}) {
           return sendJson(response, 400, { error: parsedProofType.error });
         }
 
+        const isGeneratedExport = parsedProofType.proofType === PROOF_TYPES.GENERATED;
         return handleRegistration(body, response, keyData, {
           proofType: parsedProofType.proofType,
           requiredScope: registerRequireAuthorizedIdentitySession ? SESSION_SCOPES.EXPORT : null,
-          defaultComplianceLevel: parsedProofType.proofType === PROOF_TYPES.GENERATED ? 2 : 1,
-          requireExportLineage: true
+          defaultComplianceLevel: isGeneratedExport ? 2 : 1,
+          requireExportLineage: true,
+          // GENERATED exports are subject to the same session/input enforcement as
+          // direct registrations: the source audio must be system-recorded and the
+          // session must be QR-verified when those server options are active.
+          enforceVerifiedSession: isGeneratedExport ? requireVerifiedSession : false,
+          enforceInputVerification: isGeneratedExport ? requireInputVerification : false
         });
       }
 

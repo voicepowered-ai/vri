@@ -838,8 +838,52 @@ export async function registerVoice(input, options = {}) {
   const audio = await readCanonicalAudioInput(input);
   const audioHash = sha256Hex(audio);
   const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
-  const metadata = options.metadata ?? {};
+
+  // Session-based verification model: extract session and inference context.
+  // These fields are optional for backward compatibility; when provided they
+  // are merged into the signed metadata so the proof can cryptographically
+  // attest WHO created the audio, IN WHICH SESSION, and WITH WHICH AI MODEL.
+  const session_id = options.session_id ?? null;
+  const actor_id = options.actor_id ?? null;
+  const inferenceMetadata = options.inferenceMetadata ?? null;
+
+  // Validate and normalize InferenceMetadata when provided.
+  // InferenceMetadata captures which AI model generated the audio, making it
+  // AI-traceable as part of the proof.
+  let normalizedInferenceMetadata = null;
+
+  if (inferenceMetadata != null) {
+    if (typeof inferenceMetadata !== "object" || Array.isArray(inferenceMetadata)) {
+      throw new TypeError("inferenceMetadata must be a JSON object.");
+    }
+
+    if (typeof inferenceMetadata.model_id !== "string" || inferenceMetadata.model_id.length === 0) {
+      throw new TypeError("inferenceMetadata.model_id must be a non-empty string.");
+    }
+
+    normalizedInferenceMetadata = {
+      model_id: inferenceMetadata.model_id,
+      ...(typeof inferenceMetadata.model_provider === "string" ? { model_provider: inferenceMetadata.model_provider } : {}),
+      ...(typeof inferenceMetadata.input_reference === "string" ? { input_reference: inferenceMetadata.input_reference } : {}),
+      ...(typeof inferenceMetadata.input_verified === "boolean" ? { input_verified: inferenceMetadata.input_verified } : {})
+    };
+  }
+
+  // Build effective metadata by merging session context first so that
+  // user-supplied metadata fields can override defaults if needed.
+  // Session context is included in the signed canonical metadata, providing
+  // cryptographic proof of actor identity, session, and model.
+  const sessionContext = {
+    ...(session_id !== null ? { session_id } : {}),
+    ...(actor_id !== null ? { actor_id } : {}),
+    ...(normalizedInferenceMetadata !== null ? { inference_metadata: normalizedInferenceMetadata } : {})
+  };
+  const userMetadata = options.metadata ?? {};
+  const metadata = Object.keys(sessionContext).length > 0
+    ? { ...sessionContext, ...userMetadata }
+    : userMetadata;
   const canonicalMetadata = getCanonicalMetadataString(metadata);
+
   const proofType = normalizeProofType(options.proofType ?? PROOF_TYPES.GENERATED);
   const complianceLevel = normalizeComplianceLevel(
     options.complianceLevel ?? (proofType === PROOF_TYPES.GENERATED ? 2 : 1)
@@ -917,6 +961,12 @@ export async function registerVoice(input, options = {}) {
     audioHash,
     registry: options.registry ?? DEFAULT_REGISTRY,
     createdAt: new Date(Number(timestamp) * 1000).toISOString(),
+    // Session-based verification model: top-level convenience fields.
+    // These mirror the proof_package fields for easy access without parsing
+    // the full proof package.
+    session_id: session_id ?? null,
+    actor_id: actor_id ?? null,
+    inference_metadata: normalizedInferenceMetadata ?? null,
     proofPackage: {
       protocol_version: "2.0",
       proof_type: proofType,
@@ -944,6 +994,14 @@ export async function registerVoice(input, options = {}) {
       } : {}),
       key_id: signer.keyId,
       verification_endpoint: options.verificationEndpoint ?? null,
+      // Session-based verification model: dedicated proof package fields.
+      // These make traceability explicit: WHO (actor_id), WHERE/WHEN (session_id),
+      // and WHICH MODEL (inference_metadata.model_id).
+      // They are ALSO present in `metadata` above, so they are cryptographically
+      // signed and tamper-evident.
+      ...(session_id !== null ? { session_id } : {}),
+      ...(actor_id !== null ? { actor_id } : {}),
+      ...(normalizedInferenceMetadata !== null ? { inference_metadata: normalizedInferenceMetadata } : {}),
       extensions: {}
     },
     signingKeyGenerated: signer.generated

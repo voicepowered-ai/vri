@@ -80,6 +80,49 @@ This document analyzes potential attacks against VRI as an inference-layer trace
 
 ### 2. Cryptographic Attacks
 
+#### 1.4 Input Audio Substitution
+
+**Threat**: Attacker uses audio captured outside the VRI trust boundary (e.g., audio recorded on a phone or obtained from an external source) as the TTS model input, bypassing source-audio traceability.
+
+**Attack Methods**:
+- Submit non-VRI audio as the model's voice reference or input
+- Combine a VRI-registered actor voice with an untracked training corpus
+- Import arbitrary audio into the inference pipeline without registering it as `RECORDED`
+
+**Likelihood**: High (any client can send arbitrary audio to a TTS API)  
+**Impact**: The chain of custody for the voice actor's contribution is broken; the GENERATED proof cannot attest that the source audio was itself system-verified
+
+**Mitigation**:
+- **`requireInputVerification` server flag**: gates inference on `input_reference` pointing to a `RECORDED` ledger event from this system
+- **Input audio hash binding**: when verified, `input_audio_hash` and `input_verified: true` are embedded inside the signed `canonical_metadata`, making the source attestation tamper-evident
+- **Ledger event type check**: server rejects `input_reference` events that are not `proof_type = RECORDED`
+
+**Residual Risk**: **Low** when `requireInputVerification` is on. Without it: **High** (by design — default is permissive for backward compatibility).
+
+---
+
+#### 1.5 Unverified Actor Identity
+
+**Threat**: Attacker claims to be a legitimate voice actor by supplying a known `actor_id` and `session_id` without actual QR-based verification.
+
+**Attack Methods**:
+- Provide a known `actor_id` string in a POST /register request body
+- Create a `RecordingSession` manually (`verification_method: manual`) to bypass QR requirement
+
+**Likelihood**: Medium (easy if `requireVerifiedSession` is not enabled)  
+**Impact**: False actor attribution in the proof; non-repudiability is weakened
+
+**Mitigation**:
+- **`requireVerifiedSession` server flag**: rejects any GENERATED proof request unless `session_id` references a QR-verified `RecordingSession` (`session_verified: true`)
+- **QR-activated sessions**: `session_verified: true` is only set when `from_qr: true` or `verification_method: qr_scan` is used; manual sessions always produce `session_verified: false`
+- **Combined with IdentitySession**: high-security deployments can additionally require a QR/Secure-Enclave `IdentitySession` via `registerRequireAuthorizedIdentitySession`
+
+**Residual Risk**: **Low** when both `requireVerifiedSession` and identity session controls are enabled. Without them: `actor_id` is an unverified string (**High**).
+
+---
+
+### 2. Cryptographic Attacks
+
 #### 2.1 Signature Forgery
 
 **Threat**: Create fake EdDSA signature to prove false authorship.
@@ -316,6 +359,8 @@ This document analyzes potential attacks against VRI as an inference-layer trace
 
 | Threat | Likelihood | Impact | Mitigation | Residual Risk |
 |--------|-----------|--------|-----------|---------------|
+| Input Audio Substitution | High | Medium | `requireInputVerification`, input_audio_hash binding | **Low (enforced) / High (permissive)** |
+| Unverified Actor Identity | Medium | Medium | `requireVerifiedSession`, QR session, IdentitySession | **Low (enforced) / High (permissive)** |
 | Watermark Removal | High | Medium | Multi-band, fingerprinting | **Medium** |
 | Signature Forgery | Negligible | Critical | EdDSA (crypto hard) | **Negligible** |
 | Private Key Theft | Low | Critical | HSM, key rotation | **Medium** |
@@ -338,6 +383,11 @@ Layer 1 (Strongest): Cryptography
   • EdDSA signatures (unforgeable)
   • Watermarks (embedded proof)
   • Merkle anchors (immutable)
+  • session_id + actor_id + inference_metadata signed into canonical_metadata
+
+Layer 1b (Session Gates): Pre-Inference Policy Controls
+  • requireVerifiedSession: QR-verified actor presence before GENERATED proof issuance
+  • requireInputVerification: source audio must be a RECORDED ledger event from this system
 
 Layer 2: Operational Security
   • Read-only ledger backups

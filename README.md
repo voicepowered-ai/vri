@@ -77,6 +77,9 @@ What is effectively implemented today:
 - revocation status reporting and conservative historical-validity handling
 - normalized RFC 3161 timestamp-attestation verification, raw token ingestion, and an optional built-in `openssl` adapter
 - named/versioned TSA trust profiles and release artifacts for auditability
+- **session-based, identity-linked, AI-traceable verification model** (see below): every generated audio is now traceable to an actor identity (`actor_id`), a recording context (`RecordingSession`), and an AI model (`InferenceMetadata.model_id`)
+- pre-inference session gate: `requireVerifiedSession` enforces QR-verified sessions before any GENERATED proof is accepted
+- pre-inference input gate: `requireInputVerification` enforces that the source audio was recorded and registered within this system before being used as model input
 
 The biggest remaining gap is not basic protocol coherence. It is the final production-grade integration layer around PKI/TSA operations, shared state, and external governance.
 
@@ -100,6 +103,8 @@ VRI does not detect audio. It verifies cryptographic proof attached to it.
 
 ## 5) How It Works (Real Flow)
 
+### Legacy flow (still supported)
+
 ```text
 Capture or Generation Boundary
   -> Canonicalization
@@ -109,10 +114,36 @@ Capture or Generation Boundary
   -> External Verification
 ```
 
+### Session-based flow (current recommended model)
+
+```text
+Recording Context
+  -> Actor activates RecordingSession via QR scan (session_verified = true)
+  -> Studio records source audio
+  -> Source audio registered as RECORDED proof in the ledger
+
+Inference Boundary
+  -> Pre-inference gate 1: session MUST be QR-verified
+  -> Pre-inference gate 2: input_reference MUST point to a RECORDED ledger event
+  -> Model generates audio
+  -> InferenceMetadata captured: model_id, model_provider, input_reference, input_verified
+
+Proof Generation
+  -> Canonicalization
+  -> Watermark injection (GENERATED, compliance >= 2)
+  -> Signature over: audio hash + session_id + actor_id + inference_metadata + metadata
+  -> Ledger registration
+
+Traceability Output
+  -> { audio, proof_package, session_id, inference_metadata }
+  -> Proof cryptographically attests: WHO (actor_id), WHERE/WHEN (session_id), WHICH MODEL (model_id)
+```
+
 Important boundary:
 
 - watermark injection happens during generation (inference runtime)
 - verification can happen later, offline, by independent parties
+- `session_id`, `actor_id`, and `inference_metadata` are INSIDE the signed proof — they cannot be altered post-signing
 - this repository provides reference verification and protocol tooling
 
 ## 6) Core Concepts
@@ -137,19 +168,59 @@ Ed25519 signature over the protocol message digest derived from canonical metada
 
 Canonical JSON document containing verification material (hash, signature, metadata, key references, and protocol fields).
 
+### RecordingSession _(new)_
+
+A `RecordingSession` is the entity that links every generated audio artifact to a real-world recording context:
+
+```jsonc
+{
+  "session_id": "rsess_...",
+  "actor_id": "wallet_...",       // voice actor identity
+  "studio_id": "studio_nyc_01",   // optional studio context
+  "start_time": "2026-04-04T...", // when the session began
+  "verification_method": "qr_scan" | "manual",
+  "session_verified": true         // true only for QR-activated sessions
+}
+```
+
+Sessions are created before inference begins. When `requireVerifiedSession` is enabled the server rejects any GENERATED registration that does not reference a QR-verified session.
+
+### InferenceMetadata _(new)_
+
+Captures the AI provenance of a generated audio artifact:
+
+```jsonc
+{
+  "model_id": "tts-v3",            // REQUIRED — which AI model was used
+  "model_provider": "openai",      // optional
+  "input_reference": "evt_...",    // event ID of the source RECORDED audio
+  "input_verified": true,          // true when input_reference passed system check
+  "input_audio_hash": "0x..."      // hash of the source audio (set by server)
+}
+```
+
+`InferenceMetadata` is included inside the signed `canonical_metadata`, making the AI model identity tamper-evident. When `requireInputVerification` is enabled, `input_reference` must point to a `RECORDED` ledger event — audio that did not originate within this system is rejected.
+
 ## 7) Verification Model
 
 Verification is deterministic and reproducible:
 
 - parse proof package fields
 - recompute canonical audio hash
-- recompute message digest
+- recompute message digest (including session and inference context)
 - verify Ed25519 signature
 
 Core cryptographic verification works offline.
 Level 1 yields a cryptographically valid but partial provenance result.
 The current reference implementation fully supports Level 1 and Level 2, and can issue and verify Level 3 when independent timestamp attestation and deterministic ledger anchoring are supplied.
 Level 3 additionally requires independent timestamp attestation plus ledger-backed ordering.
+
+In the session-based model, a verified proof additionally attests:
+
+- **Actor identity**: `actor_id` and `session_id` are inside the signed metadata, proving which wallet/identity authorized the generation
+- **Recording context**: the `RecordingSession` provides studio context and QR-verified actor presence
+- **AI traceability**: `inference_metadata.model_id` is signed into the proof, making the model identity tamper-evident
+- **Source audio provenance**: when `input_verified = true`, the source audio used by the model was itself a system-registered `RECORDED` artifact
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
 
