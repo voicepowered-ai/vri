@@ -25,8 +25,11 @@ VRI does not detect audio. It verifies cryptographic proof attached to it.
 
 ## Quick Navigation
 
+- [0) Real-World Workflow](#0-real-world-workflow)
 - [1) What VRI Actually Is](#1-what-vri-actually-is)
+- [Why This Matters Now](#why-this-matters-now)
 - [2) Current Project Status](#2-current-project-status)
+- [Where VRI Fits](#where-vri-fits)
 - [3) The Problem](#3-the-problem)
 - [4) The Solution](#4-the-solution)
 - [5) How It Works (Real Flow)](#5-how-it-works-real-flow)
@@ -38,7 +41,35 @@ VRI does not detect audio. It verifies cryptographic proof attached to it.
 - [11) What Is Not Included](#11-what-is-not-included)
 - [12) Demo (Input -> Audio -> Proof -> Verify VALID)](#12-demo-input---audio---proof---verify-valid)
 - [13) Roadmap](#13-roadmap)
+- [Adoption Surface](#adoption-surface)
 - [14) Additional Docs](#14-additional-docs)
+- [Long-Term Direction](#long-term-direction)
+
+## 0) Real-World Workflow
+
+VRI is designed to fit how audio is actually produced.
+
+A typical session-based workflow looks like this:
+
+1. The voice actor scans a QR code to activate their identity (`RecordingSession`, `session_verified: true`)
+2. A recording session is created — binding the actor's identity and the studio context
+3. Source audio is recorded and registered as a `RECORDED` proof in the ledger
+4. If AI is used, inference is executed with full traceability — `actor_id`, `session_id`, and `model_id` are captured
+5. The generated audio receives an embedded watermark (compliance level ≥ 2)
+6. The proof package is signed over all of the above: actor, session, model, and audio
+7. Verification is performed through a wallet — unauthorized parties cannot forge or misrepresent a verification claim
+
+This means:
+
+- identity is established **before** recording begins
+- every audio artifact is linked to a specific session
+- generated audio is cryptographically tied to a specific AI model
+- verification requires a compatible wallet and cannot be spoofed by third parties
+
+In practice:
+
+> **It works like clocking in before recording.** The actor's presence is verified, the session is opened, audio is produced under that context, and the proof follows the artifact for its entire life.
+
 
 ## 1) What VRI Actually Is
 
@@ -56,6 +87,31 @@ At its core, VRI defines a reproducible proof path with explicit mode separation
 
 The Node.js code in this repository is a reference verifier and protocol implementation. It is not an audio generation engine.
 It is also not a downstream business-logic or analytics layer.
+
+VRI is not only about verifying audio outputs.
+
+It defines a **session-based model** where each audio artifact is linked to:
+- a verified identity (voice actor, via `actor_id` and QR-activated `RecordingSession`)
+- a real recording context (session, via `session_id` and optional studio metadata)
+- and, when applicable, a specific AI model (inference, via `InferenceMetadata.model_id`)
+
+Identity is established **before** recording begins. This is not a post-hoc tagging system — the actor's presence and the session context are baked into the signed proof from the moment of issuance.
+
+## Why This Matters Now
+
+The audio production and distribution ecosystem is undergoing a structural shift. AI voice synthesis is now capable of producing output that is perceptually indistinguishable from recorded human speech. The tooling for generating, distributing, and consuming audio is evolving faster than the tooling for verifying it.
+
+This creates a specific class of problem: provenance claims become assertions, not facts. A file delivered with metadata stating "recorded by actor X on date Y" cannot be independently verified without trusting the party that produced it. That trust requirement is increasingly untenable across the range of environments where audio is produced, licensed, and distributed.
+
+The consequences are already visible at the edges of the ecosystem:
+
+- Licensing environments where parties cannot deterministically establish whether audio was recorded or synthetically generated
+- Distribution pipelines ingesting AI-generated audio without traceability to the underlying model, session context, or consent framework
+- Compliance workflows requiring attestation that existing tooling cannot produce
+
+The underlying problem is not technical incapability. It is structural: there has been no standard layer defining what a verifiable audio provenance proof is, what it must contain, and how it must be verified. Without that layer, every system that needs to answer the question "can I verify this audio?" builds a proprietary answer — or accepts the absence of one.
+
+VRI defines that standard layer. It is not a response to these conditions after the fact. It is infrastructure designed to be present at the moment audio is produced, so that verification is possible later — by any party, without relying on the producer's continued cooperation or privileged access.
 
 ## 2) Current Project Status
 
@@ -83,6 +139,22 @@ What is effectively implemented today:
 
 The biggest remaining gap is not basic protocol coherence. It is the final production-grade integration layer around PKI/TSA operations, shared state, and external governance.
 
+## Where VRI Fits
+
+VRI is not an application. It is a protocol layer that integrates inside larger systems at the points where audio is produced, processed, and distributed.
+
+**AI voice generation pipelines**: inference systems produce audio. VRI defines how that output is registered and signed, what metadata is structurally required (`model_id`, `actor_id`, `session_id`), and what a valid proof looks like. The inference runtime calls the VRI registration boundary and receives a proof package. Everything downstream — distribution, compliance, audit — can verify that package independently.
+
+**Media production environments**: recording studios and DAW-adjacent tooling capture human voice. VRI defines `RECORDED` proof issuance from a capture boundary, with deterministic audio hashing, identity binding via `RecordingSession`, and optional ledger anchoring. Session context links the artifact to the production environment and the actor's verified presence.
+
+**Legal and compliance environments**: VRI proofs carry explicit compliance level semantics (`compliance_level` 1/2/3) with well-defined verification behavior at each level. Level 3 proofs include independent RFC 3161 timestamp attestation and ledger-backed event ordering. Evidentiary weight depends on external governance and operating practice, but VRI ensures the underlying technical record is reproducible, tamper-evident, and auditable.
+
+**Content distribution platforms**: platforms receiving audio can evaluate proof packages without trusting the submitter. `proof_type`, `compliance_level`, watermark state, and signature validity are deterministic checks against public data. Platforms can define acceptance policies against these fields without running their own registration infrastructure.
+
+**Verification tools and wallets**: any party holding the proof package and public key material can run deterministic, offline verification at Level 1 and Level 2. Session-anchored verification additionally surfaces structured identity and inference context from inside the signed proof, enabling higher-assurance workflows at Level 3.
+
+VRI is composable at every layer. A distribution platform does not need to operate the same infrastructure as a recording environment. A compliance auditor does not need access to the originating system. Interoperability is achieved at the proof package level, not at the integration layer.
+
 ## 3) The Problem
 
 Current audio pipelines often cannot answer basic trust questions deterministically:
@@ -100,6 +172,19 @@ VRI defines a proof package that can be verified independently.
 Verification uses public data (audio + proof package + public key material) and deterministic checks. No hidden server state is required for the core cryptographic validation path.
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
+
+A verifier does not need access to the originating system, the producer's infrastructure, or any privileged runtime state. Verification is a property of the artifact itself. This creates a new trust layer for audio ecosystems: one where provenance claims are technical guarantees, not assertions made by the party who produced the audio. Independent verification without trusting the producer is a structural property of the protocol, not an optional feature.
+
+VRI introduces a **session-based, identity-linked verification model**.
+
+Audio is not only verifiable — it is tied to:
+- **who** generated it (voice actor identity, `actor_id`, established via QR-activated `RecordingSession`)
+- **under which session** it was produced (`session_id`, binding actor + studio context)
+- **using which AI model** it was generated (`InferenceMetadata.model_id`, a tamper-evident reference to the specific model)
+
+Verification is not fully public by default.
+
+Audio contains an embedded watermark. Full cryptographic verification requires the proof package and the signing key material — a compatible wallet. This prevents unauthorized third parties from forging or misrepresenting verification claims against an artifact they did not produce.
 
 ## 5) How It Works (Real Flow)
 
@@ -219,8 +304,10 @@ In the session-based model, a verified proof additionally attests:
 
 - **Actor identity**: `actor_id` and `session_id` are inside the signed metadata, proving which wallet/identity authorized the generation
 - **Recording context**: the `RecordingSession` provides studio context and QR-verified actor presence
-- **AI traceability**: `inference_metadata.model_id` is signed into the proof, making the model identity tamper-evident
+- **AI traceability**: `inference_metadata.model_id` is a tamper-evident reference to the specific AI model used — it is signed into the proof and cannot be changed after issuance
 - **Source audio provenance**: when `input_verified = true`, the source audio used by the model was itself a system-registered `RECORDED` artifact
+
+Verification is session-anchored, not just artifact-anchored. A valid proof does not only confirm the audio is intact — it confirms the identity context and AI provenance that were active when the audio was created.
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
 
@@ -448,6 +535,24 @@ npm test
 
 Live implementation checklist: [docs/tasks.md](docs/tasks.md)
 
+## Adoption Surface
+
+VRI is designed to be integrated at multiple points in an audio production and distribution stack. Each integration point is independent of the others.
+
+**Recording environments** — integrate at the capture boundary via `POST /register-recorded`. Registration requires audio input and optional session context (`actor_id`, `studio_id`). Output is a signed proof package linked to the actor and session. No inference runtime or AI system dependency.
+
+**AI inference systems** — integrate at the generation boundary via `POST /register`. Registration requires audio output and `inference_metadata` (including `model_id`). Optional session reference allows pre-inference enforcement gates (`requireVerifiedSession`, `requireInputVerification`). The server returns a proof package with the AI provenance signed inside `canonical_metadata`.
+
+**Export and delivery pipelines** — integrate at the export or handoff boundary via `POST /register-export`. Requires explicit `proofType`, signed lineage metadata, and parent event reference. Enforces chain of custody from source registration to final deliverable.
+
+**Distribution and ingestion platforms** — integrate at the ingest or audit boundary via `POST /verify-proof`. Verification is stateless for Level 1 and Level 2. Level 3 additionally requires TSA trust profile access and ledger anchoring state. Platforms can define acceptance policies against the structured trust signals returned: `trust_level`, `cryptographic_valid`, `watermark`, `identity_valid`, `metadata_consistent`, `protocol_valid`.
+
+**Verification tools and wallets** — consume proof packages and surface structured trust signals to end users or downstream systems. Session-anchored verification additionally surfaces `actor_id`, `session_id`, and `inference_metadata` from inside the signed proof. Core verification has no external API dependency.
+
+**Ledger and anchoring systems** — integrate with the optional ledger component for batch anchoring, Merkle inclusion proofs, and external anchor publication. Anchoring is additive: it does not change the core cryptographic verification path and is required only for Level 3 compliance.
+
+The proof package is the interoperability surface. Any system that can parse canonical JSON and verify an Ed25519 signature can participate in the verification layer without running VRI-specific infrastructure.
+
 ## 14) Additional Docs
 
 - [DOCUMENTATION.md](DOCUMENTATION.md)
@@ -458,6 +563,20 @@ Live implementation checklist: [docs/tasks.md](docs/tasks.md)
 - [docs/verification.md](docs/verification.md)
 - [docs/formal/VRI_Verifier_Release.tla](docs/formal/VRI_Verifier_Release.tla)
 - [docs/release/FINAL_RELEASE_HARDENING.md](docs/release/FINAL_RELEASE_HARDENING.md)
+
+## Long-Term Direction
+
+VRI is designed as a protocol, not a product. The reference implementation demonstrates that the protocol is executable and interoperable. It is not the only possible implementation.
+
+**Standard layer**: the protocol semantics — `proof_type`, `compliance_level`, canonical audio hashing, Ed25519 signing, watermark payload binding, session and inference metadata structure — are defined independently of any specific runtime. Future implementations in other languages or environments should produce interoperable proof packages from the same inputs. The proof package format is the normative artifact; the Node.js implementation is a reference.
+
+**Interoperability**: the proof package is canonical JSON. Core verification requires only the audio, the proof package, and the public key material. There is no proprietary encoding, no vendor-specific API dependency for Level 1 and Level 2 verification, and no required runtime environment beyond a JSON parser and an Ed25519 verifier. This is a deliberate constraint, not a limitation.
+
+**Governance independence**: VRI does not depend on a single registry, PKI hierarchy, or TSA provider. Trust profile selection, key management strategy, and ledger anchoring provider are environment-specific decisions. The protocol defines the interface and the proof semantics; each deployment chooses its own trust roots and governance posture.
+
+**Known evolution areas**: formal methods coverage for verifier soundness and completeness properties; multi-instance shared state specifications for sessions, replay tracking, and revocations; deployment profiles for studio, API, and high-assurance verification environments; alignment with emerging regulatory frameworks around synthetic media provenance. None of these evolution areas require breaking changes to the core proof format.
+
+**Adoption dependency**: VRI's long-term utility as infrastructure depends on adoption at production boundaries — not on any single deployment. The protocol is most valuable when proof issuance is a standard step in audio production and verification is an expected property of distributed audio, not a capability that must be negotiated case by case.
 
 ## License
 
