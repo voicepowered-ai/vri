@@ -37,6 +37,10 @@ These documents are explanatory. They do not override the protocol.
 - [docs/data-model.md](./docs/data-model.md)
 - [docs/watermark-spec.md](./docs/watermark-spec.md)
 - [docs/api.md](./docs/api.md)
+- [docs/identity-layer.md](./docs/identity-layer.md)
+- [docs/anchor-validation.md](./docs/anchor-validation.md) — Merkle proof verification, external anchor publication, crash safety
+- [docs/deployment-multi-instance.md](./docs/deployment-multi-instance.md) — Shared-state requirements for clustered deployments
+- [docs/cli.md](./docs/cli.md) — CLI command reference
 
 These files describe reference designs, possible deployment patterns, and companion notes. They are not evidence of a deployed production system.
 
@@ -70,7 +74,7 @@ These files provide reproducible verification of the documentation release itsel
 - Identity-bound QR session model: ✅ implemented in the Node API and core verifier.
 - Level 3 timestamp-attestation flow: ✅ implemented in the reference API and verifier, with normalized RFC 3161 support.
 - SDKs: ⚠️ partial (CLI and package modules available; standalone multi-language SDKs are not included).
-- Deployment integrations: ⚠️ partial (local and pluggable storage backends plus external anchor publication are implemented; production cloud deployment blueprints and shared-state deployments are still in progress).
+- Deployment integrations: ⚠️ partial (local and pluggable storage backends plus external anchor publication are implemented; shared-state deployment guide documented in [docs/deployment-multi-instance.md](./docs/deployment-multi-instance.md); production cloud deployment blueprints are still in progress).
 - Formal verification artifact: ⚠️ planned (threat model and property statements are present; mechanized proof work is not yet shipped).
 
 ## Next Milestones

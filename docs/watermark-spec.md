@@ -35,10 +35,52 @@ This document specifies the audio watermarking encoding, embedding, and detectio
 - Example: 1711892400 & 0xFFFFFF = 0x65EF1A30
 
 **Nonce** (8 bits):
-- Random value (0–255)
-- Prevents watermark reuse attacks
-- Enables detection in high-volume scenarios
+- Collision-resistance value (0–255)
+- Prevents watermark reuse attacks across different sessions
+- When an identity assertion is present, MUST be derived from the session nonce (see §2.3)
+- When no identity is present, derived deterministically from `SHA-256(public_key || timestamp)[0]`
 - Example: 0x73
+
+### 2.3 Session-Bound Nonce Derivation
+
+When a Proof Package includes an `identity` object, the nonce byte is not freely chosen. It is derived deterministically from the QR session's nonce field:
+
+```text
+watermark_nonce_byte = SHA-256("VRI-WM-NONCE-V1\0" || base64_decode(identity.nonce))[0]
+```
+
+**Why this matters:** the nonce byte is physically embedded in the audio file. Binding it to the session nonce creates a cryptographic chain:
+
+```
+QR challenge  →  session nonce  →  watermark nonce byte  →  audio signal
+```
+
+A verifier can recompute the expected nonce from the identity object and compare it against the extracted watermark. A mismatch (`WATERMARK_SESSION_NONCE_MISMATCH`) means either:
+
+- the watermark was generated outside the authorized session, or
+- the identity object was swapped after the audio was watermarked.
+
+**Conformance rules (normative, see protocol §8.4.1):**
+
+- Signers MUST use this derivation when `identity` is present.
+- Passing an explicit nonce that overrides the session derivation is non-compliant when `identity` is present.
+- Verifiers MUST check the nonce binding before accepting a proof with both `identity` and watermark fields.
+- Proofs without an `identity` object MUST NOT be evaluated against this rule.
+
+**Implementation:**
+
+```js
+// Node.js reference
+const CONTEXT = Buffer.from("VRI-WM-NONCE-V1\0", "utf8");
+
+function deriveSessionBoundWatermarkNonce(sessionNonce) {
+  const nonceBytes = Buffer.from(sessionNonce, "base64");
+  return crypto.createHash("sha256")
+    .update(CONTEXT)
+    .update(nonceBytes)
+    .digest()[0]; // take first byte
+}
+```
 
 ### Payload Example
 

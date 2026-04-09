@@ -2,7 +2,7 @@
   "artifact": "vri.timestamp-trust-profiles.release",
   "version": 1,
   "source_catalog": "docs/formal/timestamp-trust-profiles.catalog.json",
-  "generated_at": "2026-04-09T14:47:27.262Z",
+  "generated_at": "2026-04-09T15:01:44.201Z",
   "catalog_digest": "0xe9f49643bb0de761c0466823a797ead4166f8818f5b40c1d03940e8b8e3fd854",
   "profile_count": 2,
   "profiles": [

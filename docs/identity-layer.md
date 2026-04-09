@@ -142,6 +142,23 @@ When a proof is created, the VRI proof signature binds:
 
 This prevents an attacker from swapping identity objects after proof creation.
 
+### 1.6 Session-Bound Watermark Nonce
+
+When a watermark is included alongside an `identity` object, the watermark nonce byte (byte 7 of the 8-byte payload) **must** be derived from the session's `nonce` field, not chosen freely:
+
+```text
+watermark_nonce_byte = SHA-256("VRI-WM-NONCE-V1\0" || base64_decode(identity.nonce))[0]
+```
+
+This creates a physical link from the QR session authorization to the audio signal itself. Extracting the watermark from the audio and recomputing the expected nonce from the `identity` object lets a verifier confirm that:
+
+1. The watermark was embedded during the authorized session.
+2. The `identity` object has not been substituted.
+
+A mismatch produces verification failure `WATERMARK_SESSION_NONCE_MISMATCH` and yields trust level `LOW`.
+
+See protocol §8.4.1 and [watermark-spec.md §2.3](./watermark-spec.md) for the full normative specification.
+
 ## 2. Proof Package Extension
 
 The `identity` object is embedded in the Proof Package:
