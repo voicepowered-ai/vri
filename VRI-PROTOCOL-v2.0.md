@@ -366,6 +366,20 @@ Authorized session usage is normative:
 - a session used to authorize proof issuance MUST be single-use,
 - and a verifier operating online MUST transition the session into a terminal consumed state after the first successful authorized issuance.
 
+### 8.4.1 Session-Bound Watermark Nonce
+
+When an `identity` assertion is present in a Proof Package that also contains a watermark, the watermark nonce byte (byte 7 of the 8-byte watermark payload) MUST be derived from the session's QR nonce using the following deterministic function:
+
+```text
+watermark_nonce_byte = SHA-256("VRI-WM-NONCE-V1\0" || base64_decode(identity.nonce))[0]
+```
+
+This binding ensures that the watermark physically embedded in the audio artifact is cryptographically tied to the specific authorized session. A watermark whose nonce byte was generated independently of the session fails this check and MUST be rejected with reason `WATERMARK_SESSION_NONCE_MISMATCH`.
+
+Conforming signers MUST derive the watermark nonce via this function whenever `identity` is included in the proof. Passing an explicit nonce that overrides this derivation is non-compliant when `identity` is present.
+
+Proofs without an `identity` object MUST NOT be evaluated against this rule.
+
 ### 8.5 Identity Semantics
 
 The identity layer asserts control of a key, device, and authorized session.
@@ -427,6 +441,7 @@ Mode-specific rules:
 - `RECORDED` MAY omit watermark at any level.
 - `RECORDED` watermark presence MUST NOT increase trust beyond what the compliance level already permits.
 - `RECORDED` watermark mismatch, if a watermark claim was declared, MUST fail verification.
+- if `identity` is present and a watermark is declared, the watermark nonce byte MUST match the session-derived value per §8.4.1; mismatch MUST yield `WATERMARK_SESSION_NONCE_MISMATCH`.
 
 Level-specific rules:
 

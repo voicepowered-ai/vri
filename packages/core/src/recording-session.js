@@ -208,7 +208,13 @@ export class RecordingSessionStore {
       return;
     }
 
-    const payload = JSON.parse(fs.readFileSync(this.#filePath, "utf8"));
+    let payload;
+    try {
+      payload = JSON.parse(fs.readFileSync(this.#filePath, "utf8"));
+    } catch {
+      console.warn(`[vri/core] Could not parse recording session store at ${this.#filePath} — starting empty`);
+      return;
+    }
     const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
 
     for (const session of sessions) {
@@ -227,7 +233,7 @@ export class RecordingSessionStore {
     fs.writeFileSync(this.#filePath, JSON.stringify({
       version: 1,
       sessions: Array.from(this.#sessions.values())
-    }, null, 2), "utf8");
+    }, null, 2), { encoding: "utf8", mode: 0o600 });
   }
 
   /**

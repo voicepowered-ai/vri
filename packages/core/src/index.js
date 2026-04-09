@@ -767,10 +767,34 @@ export function deriveCreatorId(publicKeyBytes) {
   return crypto.createHash("sha256").update(publicKeyBytes).digest().subarray(0, 4);
 }
 
-export function createWatermarkPayload(publicKeyBytes, timestamp, nonce) {
-  if (nonce === undefined || nonce === null) {
-    // Derive a deterministic nonce from (publicKey, timestamp) so proofs are reproducible.
-    // Callers that need uniqueness must pass an explicit nonce.
+const WATERMARK_NONCE_CONTEXT = Buffer.from("VRI-WM-NONCE-V1\0", "utf8");
+
+/**
+ * Derives the session-bound watermark nonce byte from a QR session nonce.
+ *
+ * When an identity assertion is present, the watermark nonce MUST be derived
+ * via this function so the byte embedded in the audio is cryptographically
+ * tied to the specific session that authorized the recording.
+ *
+ * derivation: SHA-256("VRI-WM-NONCE-V1\0" || base64_decode(sessionNonce))[0]
+ */
+export function deriveSessionBoundWatermarkNonce(sessionNonce) {
+  const sessionNonceBytes = typeof sessionNonce === "string"
+    ? Buffer.from(sessionNonce, "base64")
+    : sessionNonce;
+  return crypto.createHash("sha256")
+    .update(WATERMARK_NONCE_CONTEXT)
+    .update(sessionNonceBytes)
+    .digest()[0];
+}
+
+export function createWatermarkPayload(publicKeyBytes, timestamp, nonce, sessionNonce = null) {
+  if (sessionNonce !== null && sessionNonce !== undefined) {
+    // Session-bound: nonce is derived from the QR session's nonce.
+    // This cryptographically ties the watermark to the specific authorized session.
+    nonce = deriveSessionBoundWatermarkNonce(sessionNonce);
+  } else if (nonce === undefined || nonce === null) {
+    // No session: derive deterministically from (publicKey, timestamp).
     const digest = crypto.createHash("sha256")
       .update(publicKeyBytes)
       .update(String(timestamp))
@@ -949,8 +973,13 @@ export async function registerVoice(input, options = {}) {
   }
 
   const publicKeyBytes = signer.publicKeyBytes;
+  // When an identity assertion is present, derive the watermark nonce from the
+  // session's QR nonce (§8.4.1). This creates a cryptographic binding between
+  // the watermark physically embedded in the audio and the authorized session.
+  // An explicitly provided options.nonce is ignored when a session nonce exists.
+  const sessionNonce = identity?.nonce ?? null;
   const watermarkPayload = includeWatermark
-    ? createWatermarkPayload(publicKeyBytes, timestamp, options.nonce)
+    ? createWatermarkPayload(publicKeyBytes, timestamp, sessionNonce ? undefined : options.nonce, sessionNonce)
     : null;
   const messageDigest = buildSignatureMessageDigest({
     proofType,
@@ -1359,6 +1388,26 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
         metadata_consistent: true,
         identity_valid: true
       });
+    }
+
+    // §8.4.1 Session-Bound Watermark Nonce:
+    // When an identity assertion is present and a watermark is declared, the
+    // nonce byte (watermark_payload[7]) MUST equal the session-derived nonce.
+    // A mismatch means the watermark was generated outside the authorized
+    // session or was tampered with after signing.
+    if (watermarkPayload && proofPackage.identity?.nonce) {
+      const expectedNonce = deriveSessionBoundWatermarkNonce(proofPackage.identity.nonce);
+      if (watermarkPayload[7] !== expectedNonce) {
+        return fail("WATERMARK_SESSION_NONCE_MISMATCH", {
+          error: "watermark nonce byte does not match the session-derived value",
+          expected_nonce: expectedNonce,
+          actual_nonce: watermarkPayload[7]
+        }, {
+          protocol_valid: true,
+          metadata_consistent: true,
+          identity_valid: true
+        });
+      }
     }
 
     const timestamp = Number(proofPackage.timestamp);

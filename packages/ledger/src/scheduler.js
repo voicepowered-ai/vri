@@ -18,7 +18,8 @@ export const RETRY_CONFIG = {
   initialDelayMs: 1000,
   maxDelayMs: 60000,
   backoffMultiplier: 2,
-  jitterFactor: 0.1
+  jitterFactor: 0.1,
+  maxQueueSize: 1000
 };
 
 function secureJitterUnit() {
@@ -54,6 +55,10 @@ export class BatchScheduler {
     const existing = this.#queue.find(item => item.batchId === batchId);
     if (existing) {
       return { batchId, state: this.#stateMap.get(batchId) ?? SCHEDULER_STATES.PENDING };
+    }
+
+    if (this.#queue.length >= this.#config.maxQueueSize) {
+      throw new Error(`Batch scheduler queue is full (max ${this.#config.maxQueueSize} items)`);
     }
 
     const scheduledItem = {
