@@ -375,6 +375,10 @@ function mapBatchPublication(batch) {
 
 class IdentitySessionStore {
   #challenges = new Map();
+  // Tracks "sessionId:nonce" pairs so that nonce replay checks are scoped to
+  // each session rather than being global across all creators/sessions.
+  // This prevents one creator's consumed nonce from accidentally blocking
+  // a different creator's session that happened to generate the same nonce.
   #usedNonces = new Set();
   #usedSessionIds = new Set();
   #filePath;
@@ -421,7 +425,7 @@ class IdentitySessionStore {
       sessions: Array.from(this.#challenges.values()),
       used_nonces: Array.from(this.#usedNonces.values()),
       used_session_ids: Array.from(this.#usedSessionIds.values())
-    }, null, 2), "utf8");
+    }, null, 2), { encoding: "utf8", mode: 0o600 });
   }
 
   issue({ verifierOrigin, sessionScope, ttlSeconds, sessionPublicKey, nowTimestamp }) {
@@ -472,7 +476,10 @@ class IdentitySessionStore {
       return { ok: false, error: "identity_session_replayed" };
     }
 
-    if (this.#usedNonces.has(challenge.nonce)) {
+    // Scope nonce replay check to (sessionId, nonce) so that the same nonce
+    // value used by a different session does not cause a false positive.
+    const nonceKey = `${sessionId}:${challenge.nonce}`;
+    if (this.#usedNonces.has(nonceKey)) {
       return { ok: false, error: "identity_nonce_replayed" };
     }
 
@@ -490,7 +497,7 @@ class IdentitySessionStore {
     }
 
     this.#usedSessionIds.add(sessionId);
-    this.#usedNonces.add(challenge.nonce);
+    this.#usedNonces.add(`${sessionId}:${challenge.nonce}`);
     challenge.status = "AUTHORIZED";
     challenge.redeemed_at = nowTimestamp;
     challenge.identity = identity;
@@ -1311,6 +1318,10 @@ export function createServer(options = {}) {
 
         if (typeof body.verifierOrigin !== "string" || body.verifierOrigin.length === 0) {
           return sendJson(response, 400, { error: "verifierOrigin is required" });
+        }
+
+        if (!body.verifierOrigin.startsWith("https://")) {
+          return sendJson(response, 400, { error: "verifierOrigin must use HTTPS" });
         }
 
         const parsedSessionScope = parseSessionScopeList(body.sessionScope);

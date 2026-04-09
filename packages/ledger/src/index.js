@@ -572,8 +572,12 @@ export class FileLedger {
       };
     });
 
-    await this.rewriteEvents(updatedEvents);
+    // Persist the batch record BEFORE rewriting events so that if the process
+    // crashes between the two writes, the batch exists and events remain
+    // unbatched (recoverable on the next anchor cycle) rather than referencing
+    // a batch that doesn't exist.
     await this.batchStorage.append(batch);
+    await this.rewriteEvents(updatedEvents);
 
     return batch;
   }
@@ -610,14 +614,30 @@ export class FileLedger {
       endpoint: context.endpoint,
       batch
     });
+
+    // Validate anchor response fields before trusting them.
+    if (publication.transactionHash != null && typeof publication.transactionHash !== "string") {
+      throw new Error("Anchor response: transactionHash must be a string");
+    }
+    if (publication.transactionHash && !/^(0x[a-fA-F0-9]{64}|[a-fA-F0-9]{64})$/.test(publication.transactionHash)) {
+      throw new Error("Anchor response: transactionHash has unexpected format");
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (publication.publishedAt != null) {
+      const publishedAt = Number(publication.publishedAt);
+      if (!Number.isFinite(publishedAt) || publishedAt > nowSeconds + 3600 || publishedAt < nowSeconds - 86400 * 30) {
+        throw new Error("Anchor response: publishedAt is outside acceptable range");
+      }
+    }
+
     const updatedBatch = {
       ...batch,
       blockchain_chain: publication.network ?? network,
-      blockchain_tx: publication.transactionHash,
-      blockchain_confirmed: publication.confirmed,
+      blockchain_tx: publication.transactionHash ?? null,
+      blockchain_confirmed: publication.confirmed ?? false,
       external_anchor_provider: publication.provider ?? provider,
-      external_anchor_id: publication.anchorId,
-      external_anchor_published_at: publication.publishedAt
+      external_anchor_id: typeof publication.anchorId === "string" ? publication.anchorId : null,
+      external_anchor_published_at: publication.publishedAt ?? null
     };
 
     batches[targetIndex] = updatedBatch;

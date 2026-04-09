@@ -194,7 +194,7 @@ class NonceReplayTracker {
         creator_id: creatorId,
         nonces: Array.from(nonces.values()).sort()
       }))
-    }, null, 2), "utf8");
+    }, null, 2), { encoding: "utf8", mode: 0o600 });
   }
 
   has(creatorIdHex, nonce) {
@@ -513,9 +513,15 @@ function encodeLengthPrefixedUtf8(value, label) {
   return Buffer.concat([encodeUint32BigEndian(encoded.length), encoded]);
 }
 
+const MAX_AUDIO_BYTES = 200 * 1024 * 1024; // 200 MB
+
 export function parseWavFile(buffer) {
   if (buffer.length < 12) {
     throw new Error("WAV file is too small.");
+  }
+
+  if (buffer.length > MAX_AUDIO_BYTES) {
+    throw new Error(`WAV file exceeds maximum allowed size of ${MAX_AUDIO_BYTES / 1024 / 1024} MB.`);
   }
 
   if (buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") {
@@ -761,7 +767,16 @@ export function deriveCreatorId(publicKeyBytes) {
   return crypto.createHash("sha256").update(publicKeyBytes).digest().subarray(0, 4);
 }
 
-export function createWatermarkPayload(publicKeyBytes, timestamp, nonce = crypto.randomInt(0, 256)) {
+export function createWatermarkPayload(publicKeyBytes, timestamp, nonce) {
+  if (nonce === undefined || nonce === null) {
+    // Derive a deterministic nonce from (publicKey, timestamp) so proofs are reproducible.
+    // Callers that need uniqueness must pass an explicit nonce.
+    const digest = crypto.createHash("sha256")
+      .update(publicKeyBytes)
+      .update(String(timestamp))
+      .digest();
+    nonce = digest[0];
+  }
   const payload = Buffer.alloc(8);
   deriveCreatorId(publicKeyBytes).copy(payload, 0);
 
@@ -1186,7 +1201,12 @@ export function verifyProofPackage(audioBuffer, proofPackage, options = {}) {
 
     const derivedCreatorIdHex = hex(deriveCreatorId(publicKeyBytes));
     const claimedCreatorId = proofPackage.creator_id;
-    const identityValid = typeof claimedCreatorId === "string" && claimedCreatorId.toLowerCase() === derivedCreatorIdHex.toLowerCase();
+    const identityValid = typeof claimedCreatorId === "string" &&
+      claimedCreatorId.length === derivedCreatorIdHex.length &&
+      crypto.timingSafeEqual(
+        Buffer.from(claimedCreatorId.toLowerCase()),
+        Buffer.from(derivedCreatorIdHex.toLowerCase())
+      );
 
     if (!identityValid) {
       return fail("CREATOR_ID_MISMATCH", {

@@ -12,7 +12,7 @@ export const ROLES = {
 };
 
 export class ApiKeyManager {
-  #keys = new Map(); // key -> { id, orgId, role, createdAt, lastUsedAt }
+  #keys = new Map(); // key -> { id, orgId, role, createdAt, expiresAt, lastUsedAt }
   #orgs = new Map(); // orgId -> { id, name, createdAt, quotaRemaining, quotaRefreshAt }
 
   constructor(options = {}) {
@@ -24,9 +24,11 @@ export class ApiKeyManager {
    * Create a new API key for an organization
    * @param {string} orgId - Organization ID
    * @param {string} role - Role (admin, user, readonly)
-   * @returns {object} { apiKey, id, orgId, role, createdAt }
+   * @param {object} [options]
+   * @param {number} [options.ttlDays=90] - Key lifetime in days (default 90)
+   * @returns {object} { apiKey, id, orgId, role, createdAt, expiresAt }
    */
-  createApiKey(orgId, role = ROLES.USER) {
+  createApiKey(orgId, role = ROLES.USER, options = {}) {
     if (!this.#orgs.has(orgId)) {
       throw new Error(`Organization ${orgId} does not exist`);
     }
@@ -38,16 +40,19 @@ export class ApiKeyManager {
     const apiKey = this.#generateKey();
     const id = `key_${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
+    const ttlDays = options.ttlDays ?? 90;
+    const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
 
     this.#keys.set(apiKey, {
       id,
       orgId,
       role,
       createdAt,
+      expiresAt,
       lastUsedAt: null
     });
 
-    return { apiKey, id, orgId, role, createdAt };
+    return { apiKey, id, orgId, role, createdAt, expiresAt };
   }
 
   /**
@@ -63,6 +68,10 @@ export class ApiKeyManager {
     const keyData = this.#keys.get(apiKey);
     if (!keyData) {
       return null;
+    }
+
+    if (keyData.expiresAt && new Date() > new Date(keyData.expiresAt)) {
+      return null; // Key expired
     }
 
     // Update last used time

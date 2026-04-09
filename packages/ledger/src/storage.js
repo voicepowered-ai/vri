@@ -35,7 +35,15 @@ export class JsonlStorage {
       return data
         .split("\n")
         .filter((line) => line.trim())
-        .map((line) => JSON.parse(line));
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            console.warn(`[vri/ledger] Skipping corrupted record in ${this.filePath}: ${line.substring(0, 80)}`);
+            return null;
+          }
+        })
+        .filter((record) => record !== null);
     } catch (err) {
       if (err.code === "ENOENT") return [];
       throw err;
