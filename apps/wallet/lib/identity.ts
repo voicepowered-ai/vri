@@ -9,11 +9,10 @@ import {
   canonicalizeJson,
   concatBytes,
   ensureKeyPair,
-  fromHex,
   sha256,
   signDigest,
-  toHex,
 } from "./crypto";
+import { Buffer } from "buffer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,13 +44,80 @@ export type IdentityAssertion = {
   session_timestamp: number;
   session_expires_at: number;
   device_attested: boolean;
-  attestation: Record<string, unknown>;
+  attestation?: Record<string, unknown>;
   signature: string;
 };
 
 export type RedeemResult =
   | { ok: true; sessionId: string; redeemedAt: number }
   | { ok: false; error: string; details?: unknown };
+
+function debugIdentity(message: string, extra?: Record<string, unknown>): void {
+  if (!__DEV__) {
+    return;
+  }
+
+  if (extra) {
+    console.log("[vri-wallet][identity]", message, extra);
+    return;
+  }
+
+  console.log("[vri-wallet][identity]", message);
+}
+
+function isPrivateIpv4Host(hostname: string): boolean {
+  const parts = hostname.split(".").map((value) => Number(value));
+
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  return a === 10
+    || a === 127
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168);
+}
+
+function resolveRedeemEndpoint(challenge: QRChallenge, apiBaseUrl?: string): string {
+  if (apiBaseUrl) {
+    return `${apiBaseUrl}/identity/redeem`;
+  }
+
+  try {
+    const origin = new URL(challenge.verifier_origin);
+    const hostname = origin.hostname;
+
+    // Local test mode: if the QR origin is a LAN/private host over HTTPS but no
+    // explicit override was configured, fall back to the dev API running on :8787.
+    if (hostname === "localhost" || hostname === "127.0.0.1" || isPrivateIpv4Host(hostname)) {
+      return `http://${hostname}:8787/identity/redeem`;
+    }
+  } catch {
+    // Fall back to the declared verifier origin below.
+  }
+
+  return `${challenge.verifier_origin}/identity/redeem`;
+}
+
+function mapSigningError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  debugIdentity("Signing error", { message });
+
+  if (/user canceled|cancelled|could not authenticate/i.test(message)) {
+    return "Autenticación cancelada. Vuelve a intentar y confirma en el teléfono.";
+  }
+
+  if (/incomplete on device|no vri key found/i.test(message)) {
+    return "La identidad local del wallet no estaba lista. Reabre la app e inténtalo de nuevo.";
+  }
+
+  if (/no secure random source|no prng/i.test(message)) {
+    return "No se pudo inicializar la identidad criptográfica del wallet. Reinicia la app.";
+  }
+
+  return "No se pudo firmar la autorización en el dispositivo.";
+}
 
 // ---------------------------------------------------------------------------
 // Challenge validation
@@ -178,36 +244,61 @@ export async function redeemChallenge(
   challenge: QRChallenge,
   apiBaseUrl?: string
 ): Promise<RedeemResult> {
-  const { publicKeyHex } = await ensureKeyPair();
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  let identity: IdentityAssertion;
+  debugIdentity("redeemChallenge start", {
+    sessionId: challenge.session_id,
+    verifierOrigin: challenge.verifier_origin,
+    apiOverrideUrl: apiBaseUrl ?? null
+  });
 
-  // Build unsigned assertion — field order does not matter for the object,
-  // but canonicalizeJson will sort keys before signing.
-  const unsigned: Omit<IdentityAssertion, "attestation" | "signature"> = {
-    auth_method: "QR_SECURE_ENCLAVE",
-    device_attested: false,
-    nonce: challenge.nonce,
-    public_key: publicKeyHex,
-    session_expires_at: challenge.session_expires_at,
-    session_id: challenge.session_id,
-    session_public_key: challenge.session_public_key,
-    session_scope: challenge.session_scope,
-    session_timestamp: nowSeconds,
-    verifier_origin: challenge.verifier_origin,
-  };
+  try {
+    const { publicKeyHex } = await ensureKeyPair();
+    const nowSeconds = Math.floor(Date.now() / 1000);
 
-  const digest = await buildIdentityDigest(unsigned);
-  const signature = await signDigest(digest); // triggers biometric prompt
+    // Build unsigned assertion — field order does not matter for the object,
+    // but canonicalizeJson will sort keys before signing.
+    const unsigned: Omit<IdentityAssertion, "attestation" | "signature"> = {
+      auth_method: "QR_SECURE_ENCLAVE",
+      device_attested: false,
+      nonce: challenge.nonce,
+      public_key: publicKeyHex,
+      session_expires_at: challenge.session_expires_at,
+      session_id: challenge.session_id,
+      session_public_key: challenge.session_public_key,
+      session_scope: challenge.session_scope,
+      session_timestamp: nowSeconds,
+      verifier_origin: challenge.verifier_origin,
+    };
 
-  const identity: IdentityAssertion = {
-    ...unsigned,
-    attestation: {},
-    signature,
-  };
+    const digest = await buildIdentityDigest(unsigned);
+    debugIdentity("Identity digest built", { sessionId: challenge.session_id, publicKeyHex });
+    const signature = await signDigest(digest); // triggers biometric prompt
 
-  const endpoint = apiBaseUrl
-    ? `${apiBaseUrl}/identity/redeem`
-    : `${challenge.verifier_origin}/identity/redeem`;
+    identity = {
+      ...unsigned,
+      signature,
+    };
+    debugIdentity("Identity signed", {
+      sessionId: challenge.session_id,
+      publicKeyHex,
+      signatureBytes: Buffer.from(signature.slice(2), "hex").length
+    });
+  } catch (error) {
+    debugIdentity("redeemChallenge failed before network", {
+      sessionId: challenge.session_id,
+      message: error instanceof Error ? error.message : String(error ?? "")
+    });
+    return {
+      ok: false,
+      error: mapSigningError(error),
+    };
+  }
+
+  const endpoint = resolveRedeemEndpoint(challenge, apiBaseUrl);
+  debugIdentity("Posting identity redeem request", {
+    sessionId: challenge.session_id,
+    endpoint
+  });
 
   let response: Response;
   try {
@@ -217,6 +308,10 @@ export async function redeemChallenge(
       body: JSON.stringify({ identity }),
     });
   } catch (err) {
+    debugIdentity("Redeem network error", {
+      sessionId: challenge.session_id,
+      message: err instanceof Error ? err.message : String(err ?? "")
+    });
     return {
       ok: false,
       error: "Sin conexión. Verifica tu red e intenta de nuevo.",
@@ -225,6 +320,12 @@ export async function redeemChallenge(
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
+    debugIdentity("Redeem rejected by API", {
+      sessionId: challenge.session_id,
+      status: response.status,
+      error: typeof body.error === "string" ? body.error : null,
+      details: "details" in body ? body.details : null
+    });
     return {
       ok: false,
       error: mapApiError(body.error),
@@ -233,6 +334,10 @@ export async function redeemChallenge(
   }
 
   const data = await response.json();
+  debugIdentity("Redeem accepted by API", {
+    sessionId: data.session_id,
+    redeemedAt: data.redeemed_at
+  });
   return {
     ok: true,
     sessionId: data.session_id,

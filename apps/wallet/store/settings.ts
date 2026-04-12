@@ -3,7 +3,7 @@
  */
 
 import { create } from "zustand";
-import * as SecureStore from "expo-secure-store";
+import * as Storage from "../lib/storage";
 
 const STORE_KEY = "vri_settings_v1";
 
@@ -30,7 +30,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   load: async () => {
     if (get().loaded) return;
-    const raw = await SecureStore.getItemAsync(STORE_KEY);
+    const raw = await Storage.getItemAsync(STORE_KEY);
     const saved: Settings = raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
     set({ ...saved, loaded: true });
   },
@@ -38,12 +38,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setPublicKey: async (hex) => {
     set({ publicKeyHex: hex });
     const current: Settings = { publicKeyHex: hex, apiOverrideUrl: get().apiOverrideUrl };
-    await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(current));
+    await Storage.setItemAsync(STORE_KEY, JSON.stringify(current));
   },
 
   setApiOverrideUrl: async (url) => {
     set({ apiOverrideUrl: url });
     const current: Settings = { publicKeyHex: get().publicKeyHex, apiOverrideUrl: url };
-    await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(current));
+    await Storage.setItemAsync(STORE_KEY, JSON.stringify(current));
   },
 }));

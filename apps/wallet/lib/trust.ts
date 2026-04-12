@@ -1,11 +1,11 @@
 /**
  * VRI Wallet — Trusted origin management
  *
- * Origins are stored in expo-secure-store as a JSON array.
+ * Origins are stored in app storage as a JSON array.
  * An origin is trusted if the user explicitly approved it.
  */
 
-import * as SecureStore from "expo-secure-store";
+import * as Storage from "./storage";
 
 const STORE_KEY = "vri_trusted_origins_v1";
 
@@ -16,7 +16,7 @@ export type TrustDecision = "trusted" | "blocked" | "unknown";
 // ---------------------------------------------------------------------------
 
 async function loadOrigins(): Promise<Record<string, TrustDecision>> {
-  const raw = await SecureStore.getItemAsync(STORE_KEY);
+  const raw = await Storage.getItemAsync(STORE_KEY);
   if (!raw) return {};
   try {
     return JSON.parse(raw);
@@ -26,7 +26,7 @@ async function loadOrigins(): Promise<Record<string, TrustDecision>> {
 }
 
 async function saveOrigins(map: Record<string, TrustDecision>): Promise<void> {
-  await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(map));
+  await Storage.setItemAsync(STORE_KEY, JSON.stringify(map));
 }
 
 function extractHost(origin: string): string {

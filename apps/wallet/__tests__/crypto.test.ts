@@ -12,6 +12,7 @@ import {
   signDigest,
   deleteKeyPair,
 } from "../lib/crypto";
+import * as Storage from "../lib/storage";
 
 // ---------------------------------------------------------------------------
 // toHex / fromHex
@@ -136,6 +137,16 @@ describe("ensureKeyPair / signDigest / deleteKeyPair", () => {
     const first = await ensureKeyPair();
     const second = await ensureKeyPair();
     expect(first.publicKeyHex).toBe(second.publicKeyHex);
+  });
+
+  it("recovers automatically when only the public key was persisted", async () => {
+    const first = await ensureKeyPair();
+    await Storage.deleteItemAsync("vri_identity_secret_key_v1");
+
+    const recovered = await ensureKeyPair();
+
+    expect(recovered.publicKeyHex).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(recovered.publicKeyHex).not.toBe(first.publicKeyHex);
   });
 
   it("deleteKeyPair resets — next call generates a new key", async () => {

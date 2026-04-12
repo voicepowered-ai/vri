@@ -6,7 +6,7 @@
  */
 
 import { create } from "zustand";
-import * as SecureStore from "expo-secure-store";
+import * as Storage from "../lib/storage";
 
 const STORE_KEY = "vri_session_history_v1";
 const MAX_SESSIONS = 50;
@@ -29,7 +29,7 @@ type SessionsState = {
 };
 
 async function persist(sessions: SessionRecord[]): Promise<void> {
-  await SecureStore.setItemAsync(STORE_KEY, JSON.stringify(sessions));
+  await Storage.setItemAsync(STORE_KEY, JSON.stringify(sessions));
 }
 
 export const useSessionsStore = create<SessionsState>((set, get) => ({
@@ -38,7 +38,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
   load: async () => {
     if (get().loaded) return;
-    const raw = await SecureStore.getItemAsync(STORE_KEY);
+    const raw = await Storage.getItemAsync(STORE_KEY);
     const sessions: SessionRecord[] = raw ? JSON.parse(raw) : [];
     set({ sessions, loaded: true });
   },
@@ -59,6 +59,6 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
   clear: async () => {
     set({ sessions: [] });
-    await SecureStore.deleteItemAsync(STORE_KEY);
+    await Storage.deleteItemAsync(STORE_KEY);
   },
 }));

@@ -41,7 +41,8 @@
         {
           "cameraPermission": "VRI Wallet necesita la cámara para escanear códigos QR de autorización."
         }
-      ]
+      ],
+      "expo-asset"
     ]
   }
 }

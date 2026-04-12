@@ -11,11 +11,28 @@ export default function RootLayout() {
 
   useEffect(() => {
     async function init() {
-      await loadSessions();
-      await loadSettings();
-      // Ensure key pair exists on first launch
-      const { publicKeyHex } = await ensureKeyPair();
-      await setPublicKey(publicKeyHex);
+      try {
+        if (__DEV__) {
+          console.log("[vri-wallet][boot] init start");
+        }
+        await loadSessions();
+        await loadSettings();
+        if (__DEV__) {
+          console.log("[vri-wallet][boot] stores loaded");
+        }
+        // Ensure key pair exists on first launch
+        const { publicKeyHex } = await ensureKeyPair();
+        await setPublicKey(publicKeyHex);
+        if (__DEV__) {
+          console.log("[vri-wallet][boot] key pair ready", { publicKeyHex });
+        }
+      } catch (error) {
+        if (__DEV__) {
+          console.log("[vri-wallet][boot] init failed", {
+            message: error instanceof Error ? error.message : String(error ?? "")
+          });
+        }
+      }
     }
     init();
   }, []);

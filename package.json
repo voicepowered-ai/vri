@@ -6,6 +6,9 @@
   ],
   "scripts": {
     "dev:api": "node packages/api/src/server.js",
+    "dev:api:infra": "node scripts/dev-api-infra.mjs",
+    "dev:recorder": "npm --prefix apps/recorder run dev -- --host",
+    "dev:wallet": "npm --prefix apps/wallet run start",
     "cli:verify": "node packages/cli/src/index.js verify examples/test/audio.wav examples/test/proof.json",
     "cli:register": "node packages/cli/src/index.js register examples/test/audio.wav",
     "release:timestamp-trust": "node scripts/generate-timestamp-trust-release.mjs",

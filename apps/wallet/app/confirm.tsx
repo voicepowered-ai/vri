@@ -49,6 +49,13 @@ export default function ConfirmScreen() {
 
   // Check trust status on mount
   useEffect(() => {
+    if (__DEV__) {
+      console.log("[vri-wallet][confirm] mounted", {
+        sessionId: challenge.session_id,
+        verifierOrigin: challenge.verifier_origin,
+        apiOverrideUrl: apiOverrideUrl ?? null
+      });
+    }
     getTrustDecision(challenge.verifier_origin).then(setTrustStatus);
   }, []);
 
@@ -90,9 +97,23 @@ export default function ConfirmScreen() {
   }
 
   async function doRedeem() {
+    if (__DEV__) {
+      console.log("[vri-wallet][confirm] doRedeem start", {
+        sessionId: challenge.session_id,
+        apiOverrideUrl: apiOverrideUrl ?? null,
+        trustStatus
+      });
+    }
     setLoading(true);
     const result = await redeemChallenge(challenge, apiOverrideUrl ?? undefined);
     setLoading(false);
+    if (__DEV__) {
+      console.log("[vri-wallet][confirm] doRedeem result", {
+        sessionId: challenge.session_id,
+        ok: result.ok,
+        error: result.ok ? null : result.error
+      });
+    }
 
     if (result.ok) {
       await addSession({

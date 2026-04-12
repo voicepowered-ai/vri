@@ -1,0 +1,48 @@
+:root {
+  --bg: #efe5d6;
+  --bg-deep: #d7c5a7;
+  --ink: #102c29;
+  --muted: #5b665d;
+  --accent: #b6602c;
+  --mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+  --sans: "Instrument Sans", "Segoe UI", sans-serif;
+
+  font-family: var(--sans);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.62), transparent 38%),
+    radial-gradient(circle at bottom right, rgba(182, 96, 44, 0.12), transparent 32%),
+    linear-gradient(135deg, var(--bg), var(--bg-deep));
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}

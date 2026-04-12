@@ -90,6 +90,30 @@ test("GET /health responds with ok", async () => {
   }
 });
 
+test("OPTIONS preflight returns CORS headers for allowed recorder origins", async () => {
+  const { server, baseUrl } = await startTestServer({
+    corsAllowedOrigins: ["http://localhost:5173"]
+  });
+
+  try {
+    const response = await fetch(`${baseUrl}/identity/challenges`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://localhost:5173",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type"
+      }
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("access-control-allow-origin"), "http://localhost:5173");
+    assert.match(response.headers.get("access-control-allow-methods") ?? "", /POST/);
+    assert.match(response.headers.get("access-control-allow-headers") ?? "", /Content-Type/i);
+  } finally {
+    server.close();
+  }
+});
+
 test("POST /identity/challenges issues a pending QR challenge", async () => {
   const { server, baseUrl } = await startTestServer({
     trustedVerifierOrigins: ["https://studio.vri.example"]

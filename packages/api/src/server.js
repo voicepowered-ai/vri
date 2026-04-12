@@ -42,6 +42,24 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload, null, 2));
 }
 
+function appendVaryHeader(response, value) {
+  const current = response.getHeader("vary");
+
+  if (!current) {
+    response.setHeader("vary", value);
+    return;
+  }
+
+  const existing = String(current)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  if (!existing.includes(value)) {
+    response.setHeader("vary", [...existing, value].join(", "));
+  }
+}
+
 function assertNoDuplicateJsonObjectKeys(source) {
   let index = 0;
 
@@ -442,6 +460,7 @@ class IdentitySessionStore {
       status: "PENDING",
       created_at: nowTimestamp,
       redeemed_at: null,
+      canceled_at: null,
       consumed_at: null,
       identity: null
     });
@@ -536,6 +555,35 @@ class IdentitySessionStore {
     };
   }
 
+  cancel(sessionId, { nowTimestamp }) {
+    const challenge = this.get(sessionId);
+
+    if (!challenge) {
+      return { ok: false, error: "identity_session_not_found" };
+    }
+
+    if (challenge.status === "CONSUMED") {
+      return { ok: false, error: "identity_session_consumed" };
+    }
+
+    if (challenge.status === "EXPIRED") {
+      return { ok: false, error: "identity_session_expired" };
+    }
+
+    if (challenge.status === "CANCELED") {
+      return { ok: false, error: "identity_session_already_canceled" };
+    }
+
+    challenge.status = "CANCELED";
+    challenge.canceled_at = nowTimestamp;
+    this.#persistToDisk();
+
+    return {
+      ok: true,
+      session: challenge
+    };
+  }
+
   authorize(identity, { requiredScope, nowTimestamp }) {
     const sessionId = identity?.session_id;
     const challenge = this.get(sessionId);
@@ -546,6 +594,10 @@ class IdentitySessionStore {
 
     if (challenge.status === "CONSUMED") {
       return { ok: false, error: "identity_session_consumed" };
+    }
+
+    if (challenge.status === "CANCELED") {
+      return { ok: false, error: "identity_session_canceled" };
     }
 
     if (challenge.status !== "AUTHORIZED") {
@@ -831,7 +883,14 @@ export function createServer(options = {}) {
     }
   });
   const keyManager = options.keyManager ?? createKeyManager();
-  const auditLog = options.auditLog ?? createAuditLog({ backend: options.auditLogBackend || "memory" });
+  const auditLog = options.auditLog ?? createAuditLog({
+    backend: options.auditLogBackend || "memory",
+    filePath: options.auditLogFilePath ?? null,
+    minLevel: options.auditLogMinLevel ?? "INFO"
+  });
+  const auditLogReady = typeof auditLog.initialize === "function"
+    ? Promise.resolve(auditLog.initialize())
+    : Promise.resolve();
   const apiKeyManager = options.apiKeyManager ?? createApiKeyManager();
   const perfProfiler = options.perfProfiler ?? createPerfProfiler();
   const scheduler = options.scheduler ?? createBatchScheduler(ledger, options.schedulerConfig);
@@ -928,6 +987,40 @@ export function createServer(options = {}) {
   }
   const defaultVerificationEndpoint = options.verificationEndpoint ?? "http://localhost:8787/verify-proof";
   const requireAuth = options.requireAuth ?? false;
+  const corsAllowedOrigins = Array.isArray(options.corsAllowedOrigins)
+    ? options.corsAllowedOrigins.filter((origin) => typeof origin === "string" && origin.length > 0)
+    : [];
+  const corsAllowedHeaders = Array.isArray(options.corsAllowedHeaders) && options.corsAllowedHeaders.length > 0
+    ? options.corsAllowedHeaders
+    : ["Content-Type", "Authorization"];
+  const corsAllowedMethods = Array.isArray(options.corsAllowedMethods) && options.corsAllowedMethods.length > 0
+    ? options.corsAllowedMethods
+    : ["GET", "POST", "OPTIONS"];
+  const corsMaxAgeSeconds = Math.max(0, Number(options.corsMaxAgeSeconds ?? 600) || 600);
+
+  function applyCorsHeaders(request, response) {
+    const requestOrigin = typeof request.headers.origin === "string"
+      ? request.headers.origin
+      : null;
+
+    if (!requestOrigin || corsAllowedOrigins.length === 0) {
+      return false;
+    }
+
+    const allowAnyOrigin = corsAllowedOrigins.includes("*");
+
+    if (!allowAnyOrigin && !corsAllowedOrigins.includes(requestOrigin)) {
+      return false;
+    }
+
+    appendVaryHeader(response, "Origin");
+    response.setHeader("access-control-allow-origin", allowAnyOrigin ? "*" : requestOrigin);
+    response.setHeader("access-control-allow-methods", corsAllowedMethods.join(", "));
+    response.setHeader("access-control-allow-headers", corsAllowedHeaders.join(", "));
+    response.setHeader("access-control-max-age", String(corsMaxAgeSeconds));
+
+    return true;
+  }
 
   async function handleRegistration(body, response, keyData, {
     proofType,
@@ -1279,6 +1372,15 @@ export function createServer(options = {}) {
 
   const server = http.createServer(async (request, response) => {
     try {
+      await auditLogReady;
+      applyCorsHeaders(request, response);
+
+      if (request.method === "OPTIONS") {
+        response.writeHead(204);
+        response.end();
+        return;
+      }
+
       const authResult = validateRequest(request);
       if (!authResult.valid) {
         return sendJson(response, 401, { error: authResult.error });
@@ -1387,6 +1489,22 @@ export function createServer(options = {}) {
         }
 
         return sendJson(response, 200, session);
+      }
+
+      if (request.method === "POST" && request.url.startsWith("/identity/sessions/") && request.url.endsWith("/cancel")) {
+        const sessionId = decodeURIComponent(
+          request.url.slice("/identity/sessions/".length, -"/cancel".length)
+        );
+        const nowTimestamp = Math.floor(Date.now() / 1000);
+        const canceled = identitySessionStore.cancel(sessionId, { nowTimestamp });
+
+        if (!canceled.ok) {
+          return sendJson(response, 400, {
+            error: canceled.error
+          });
+        }
+
+        return sendJson(response, 200, canceled.session);
       }
 
       if (request.method === "GET" && request.url === "/ledger/status") {
