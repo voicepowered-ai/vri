@@ -242,6 +242,53 @@ test("GET /identity/sessions/:id returns session state", async () => {
   }
 });
 
+test("POST /identity/sessions/:id/cancel cancels an authorized session", async () => {
+  const { server, baseUrl } = await startTestServer({
+    trustedVerifierOrigins: ["https://studio.vri.example"]
+  });
+
+  try {
+    const devicePrivateKeyPem = crypto.generateKeyPairSync("ed25519").privateKey.export({
+      type: "pkcs8",
+      format: "pem"
+    });
+
+    const challengeResponse = await fetch(`${baseUrl}/identity/challenges`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        verifierOrigin: "https://studio.vri.example",
+        sessionScope: ["recording"],
+        sessionPublicKey: "0xsessionpub"
+      })
+    });
+    const challengePayload = await challengeResponse.json();
+
+    const identity = createIdentityAssertion(challengePayload.challenge, {
+      privateKeyPem: devicePrivateKeyPem,
+      sessionTimestamp: Math.floor(Date.now() / 1000)
+    });
+
+    const redeemResponse = await fetch(`${baseUrl}/identity/redeem`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identity })
+    });
+    assert.equal(redeemResponse.status, 200);
+
+    const cancelResponse = await fetch(
+      `${baseUrl}/identity/sessions/${encodeURIComponent(challengePayload.challenge.session_id)}/cancel`,
+      { method: "POST" }
+    );
+    const cancelPayload = await cancelResponse.json();
+
+    assert.equal(cancelResponse.status, 200);
+    assert.equal(cancelPayload.status, "CANCELED");
+  } finally {
+    server.close();
+  }
+});
+
 test("identity sessions persist across server restarts when identitySessionStoreFilePath is configured", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "vri-identity-state-"));
   const identitySessionStoreFilePath = path.join(tempDir, "identity-sessions.json");

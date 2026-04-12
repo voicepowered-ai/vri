@@ -21,6 +21,7 @@ const STATUS_COLORS: Record<SessionRecord["status"], string> = {
   AUTHORIZED: "#00C853",
   CONSUMED: "#4FC3F7",
   EXPIRED: "#FF5252",
+  CANCELED: "#FFA726",
 };
 
 function SessionItem({ item }: { item: SessionRecord }) {

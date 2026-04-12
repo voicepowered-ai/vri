@@ -52,6 +52,10 @@ export type RedeemResult =
   | { ok: true; sessionId: string; redeemedAt: number }
   | { ok: false; error: string; details?: unknown };
 
+export type CancelSessionResult =
+  | { ok: true; sessionId: string; status: "CANCELED" }
+  | { ok: false; error: string; details?: unknown };
+
 function debugIdentity(message: string, extra?: Record<string, unknown>): void {
   if (!__DEV__) {
     return;
@@ -98,6 +102,30 @@ function resolveRedeemEndpoint(challenge: QRChallenge, apiBaseUrl?: string): str
   }
 
   return `${challenge.verifier_origin}/identity/redeem`;
+}
+
+function resolveSessionActionEndpoint(
+  verifierOrigin: string,
+  sessionId: string,
+  action: "cancel",
+  apiBaseUrl?: string
+): string {
+  if (apiBaseUrl) {
+    return `${apiBaseUrl}/identity/sessions/${encodeURIComponent(sessionId)}/${action}`;
+  }
+
+  try {
+    const origin = new URL(verifierOrigin);
+    const hostname = origin.hostname;
+
+    if (hostname === "localhost" || hostname === "127.0.0.1" || isPrivateIpv4Host(hostname)) {
+      return `http://${hostname}:8787/identity/sessions/${encodeURIComponent(sessionId)}/${action}`;
+    }
+  } catch {
+    // Fall back to verifier_origin below.
+  }
+
+  return `${verifierOrigin}/identity/sessions/${encodeURIComponent(sessionId)}/${action}`;
 }
 
 function mapSigningError(error: unknown): string {
@@ -355,6 +383,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   identity_session_replayed: "Esta sesión ya fue usada.",
   identity_nonce_replayed: "Nonce ya utilizado.",
   identity_session_not_pending: "Esta sesión ya fue autorizada.",
+  identity_session_consumed: "La sesión ya fue utilizada.",
+  identity_session_canceled: "La sesión ya fue cancelada.",
+  identity_session_already_canceled: "La sesión ya estaba cancelada.",
   IDENTITY_SIGNATURE_INVALID: "Firma inválida. Intenta de nuevo.",
   IDENTITY_UNTRUSTED_ORIGIN: "Origen no confiable.",
   IDENTITY_NONCE_MISMATCH: "El challenge no coincide con el servidor.",
@@ -363,4 +394,55 @@ const ERROR_MESSAGES: Record<string, string> = {
 function mapApiError(code?: string): string {
   if (!code) return "Error desconocido del servidor.";
   return ERROR_MESSAGES[code] ?? `Error: ${code}`;
+}
+
+export async function cancelIdentitySession(
+  sessionId: string,
+  verifierOrigin: string,
+  apiBaseUrl?: string
+): Promise<CancelSessionResult> {
+  const endpoint = resolveSessionActionEndpoint(verifierOrigin, sessionId, "cancel", apiBaseUrl);
+  debugIdentity("Posting identity cancel request", { sessionId, endpoint });
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (error) {
+    debugIdentity("Cancel network error", {
+      sessionId,
+      message: error instanceof Error ? error.message : String(error ?? "")
+    });
+    return {
+      ok: false,
+      error: "Sin conexión. Verifica tu red e intenta de nuevo."
+    };
+  }
+
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    debugIdentity("Cancel rejected by API", {
+      sessionId,
+      status: response.status,
+      error: typeof body.error === "string" ? body.error : null
+    });
+    return {
+      ok: false,
+      error: mapApiError(typeof body.error === "string" ? body.error : undefined),
+      details: body.details
+    };
+  }
+
+  debugIdentity("Cancel accepted by API", {
+    sessionId,
+    status: body.status
+  });
+  return {
+    ok: true,
+    sessionId,
+    status: "CANCELED"
+  };
 }

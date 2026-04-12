@@ -16,7 +16,7 @@ export type SessionRecord = {
   verifier_origin: string;
   session_scope: string[];
   redeemed_at: number; // Unix seconds
-  status: "AUTHORIZED" | "CONSUMED" | "EXPIRED";
+  status: "AUTHORIZED" | "CONSUMED" | "EXPIRED" | "CANCELED";
 };
 
 type SessionsState = {
