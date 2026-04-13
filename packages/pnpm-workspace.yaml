@@ -1,2 +1,2 @@
 packages:
-  - '*' # Esto incluye api, cli, core, ledger, watermark, etc.
+  - 'packages/*'

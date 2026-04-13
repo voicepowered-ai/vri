@@ -6,6 +6,6 @@
     "vri": "./src/index.js"
   },
   "dependencies": {
-    "@vri/core": "workspace:*"
+    "@vri-protocol/core": "workspace:*"
   }
 }

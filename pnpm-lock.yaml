@@ -1,0 +1,41 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/api:
+    dependencies:
+      '@vri-protocol/core':
+        specifier: workspace:*
+        version: link:../core
+      '@vri-protocol/ledger':
+        specifier: workspace:*
+        version: link:../ledger
+      '@vri-protocol/watermark':
+        specifier: workspace:*
+        version: link:../watermark
+
+  packages/cli:
+    dependencies:
+      '@vri-protocol/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/core: {}
+
+  packages/ledger:
+    dependencies:
+      '@vri-protocol/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/watermark:
+    dependencies:
+      '@vri-protocol/core':
+        specifier: workspace:*
+        version: link:../core
