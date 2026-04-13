@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile } from "node:fs/promises";
-import { registerVoice, verifyVoice, verifyProofPackage } from "../../core/src/index.js";
+import { registerVoice, verifyVoice, verifyProofPackage } from "@vri/core";
 
 function getApiBaseUrl() {
   return process.env.VRI_API_URL ?? "http://localhost:8787";

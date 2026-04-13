@@ -1,11 +1,11 @@
 {
-  "name": "@vri/cli",
+  "name": "@vri-protocol/cli",
   "version": "0.1.0",
   "type": "module",
   "bin": {
     "vri": "./src/index.js"
   },
   "dependencies": {
-    "@vri/core": "0.1.0"
+    "@vri/core": "workspace:*"
   }
 }

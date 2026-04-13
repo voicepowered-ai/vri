@@ -1,5 +1,5 @@
 {
-  "name": "@vri/ledger",
+  "name": "@vri-protocol/ledger",
   "version": "0.1.0",
   "type": "module",
   "main": "./src/index.js",
@@ -7,6 +7,6 @@
     ".": "./src/index.js"
   },
   "dependencies": {
-    "@vri/core": "0.1.0"
+    "@vri-protocol/core": "workspace:*"
   }
 }

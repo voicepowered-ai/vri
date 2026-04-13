@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "profile_id": "tsa-inline-staging",
+      "profile_name": "Inline Staging TSA Policy",
+      "version": 1,
+      "effective_at": null,
+      "validation_profile": {
+        "adapter": "openssl-ts-verify",
+        "policy": "1.2.3.4.5",
+        "policy_check": true
+      },
+      "trusted_timestamp_authorities": [
+        {
+          "tsa": "tsa.staging.vri.example",
+          "policy_oids": ["1.2.3.4.5"]
+        }
+      ]
+    },
+    {
+      "profile_id": "tsa-eu-prod-v1",
+      "profile_name": "EU Production TSA Policy",
+      "version": 7,
+      "effective_at": 1774995000,
+      "validation_profile": {
+        "adapter": "openssl-ts-verify",
+        "attime": 1774995000,
+        "crl_check": true,
+        "x509_strict": true
+      },
+      "trusted_timestamp_authorities": [
+        {
+          "name": "tsa.example",
+          "tsa": "tsa.example",
+          "policy_oids": ["1.2.3.4.5"]
+        }
+      ]
+    }
+  ]
+}

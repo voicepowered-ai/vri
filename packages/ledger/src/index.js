@@ -2,8 +2,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import net from "node:net";
 import dns from "node:dns/promises";
-import { getCanonicalMetadataString, sha256Hex } from "../../core/src/index.js";
-import { createStorage } from "./storage.js";
+import { getCanonicalMetadataString, sha256Hex } from "@vri/core";
+import { createStorage } from "./storage.js"; // Este se queda igual porque está en la misma carpeta
 
 const DEFAULT_LEDGER_FILE = path.resolve(process.cwd(), "tmp/vri-ledger/events.jsonl");
 const DEFAULT_BATCH_FILE = path.resolve(process.cwd(), "tmp/vri-ledger/batches.jsonl");

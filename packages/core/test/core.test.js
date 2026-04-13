@@ -773,11 +773,12 @@ test("timestamp trust release artifact generator publishes a manifest aligned wi
     stdio: "ignore"
   });
 
-  const catalog = JSON.parse(await readFile("docs/formal/timestamp-trust-profiles.catalog.json", "utf8"));
-  const release = JSON.parse(await readFile("docs/release/timestamp-trust-profiles.release.json", "utf8"));
+const catalog = JSON.parse(await readFile("docs/formal/timestamp-trust-profiles.catalog.json", "utf8"));
+const release = JSON.parse(await readFile("docs/release/timestamp-trust-profiles.release.json", "utf8"));
 
-  assert.equal(release.artifact, "vri.timestamp-trust-profiles.release");
+assert.equal(release.artifact, "vri.timestamp-trust-profiles.release");
   assert.equal(release.source_catalog, "docs/formal/timestamp-trust-profiles.catalog.json");
+  // ... resto de los asserts
   assert.equal(release.profile_count, catalog.profiles.length);
   assert.deepEqual(
     release.profiles.map((entry) => entry.profile_id),

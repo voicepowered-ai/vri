@@ -2,6 +2,8 @@ import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+
+// Todo lo que viene de @vri/core
 import {
   createSessionChallenge,
   getTimestampAttestationReceiptDigest,
@@ -12,30 +14,31 @@ import {
   createNonceReplayTracker,
   PROOF_TYPES,
   SESSION_SCOPES,
-  verifyIdentityAssertion
-} from "../../core/src/index.js";
-import { createKeyManager } from "../../core/src/key-manager.js";
-import { createAuditLog, EVENT_TYPES } from "../../core/src/audit-log.js";
-import { createLedger, ExternalAnchorError } from "../../ledger/src/index.js";
-import { createWatermarkEngine } from "../../watermark/src/index.js";
-import { createApiKeyManager, ROLES } from "../../core/src/api-key-manager.js";
-import { createPerfProfiler } from "../../core/src/perf-profiler.js";
-import { createBatchScheduler } from "../../ledger/src/scheduler.js";
-import { createRevocationRegistry } from "../../core/src/revocation-registry.js";
-import {
+  verifyIdentityAssertion,
+  createKeyManager,             // Movido de archivo a paquete
+  createAuditLog, EVENT_TYPES,  // Movido de archivo a paquete
+  createApiKeyManager, ROLES,   // Movido de archivo a paquete
+  createPerfProfiler,           // Movido de archivo a paquete
+  createRevocationRegistry,     // Movido de archivo a paquete
   normalizeRfc3161TimestampAttestation,
-  verifyRfc3161TimestampAttestation
-} from "../../core/src/timestamp-attestation.js";
-import {
+  verifyRfc3161TimestampAttestation,
   buildOpenSslTimestampVerifyArgs,
-  parseRfc3161TokenWithOpenSsl
-} from "../../core/src/openssl-rfc3161.js";
-// Session-based verification model: RecordingSession store and helpers
-import {
-  RecordingSessionStore,
+  parseRfc3161TokenWithOpenSsl,
+  RecordingSessionStore,        // Integrados desde el core
   SESSION_VERIFICATION_METHODS,
   validateRecordingSession
-} from "../../core/src/recording-session.js";
+} from "@vri/core";
+
+// Lo que viene de @vri/ledger
+import { 
+  createLedger, 
+  ExternalAnchorError,
+  createBatchScheduler 
+} from "@vri/ledger";
+
+// Lo que viene de @vri/watermark
+import { createWatermarkEngine } from "@vri/watermark";
+
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });

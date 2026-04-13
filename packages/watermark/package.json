@@ -1,5 +1,5 @@
 {
-  "name": "@vri/watermark",
+  "name": "@vri-protocol/watermark",
   "version": "0.1.0",
   "type": "module",
   "main": "./src/index.js",

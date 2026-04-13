@@ -1,0 +1,35 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  api:
+    dependencies:
+      '@vri/core':
+        specifier: workspace:*
+        version: link:../core
+      '@vri/ledger':
+        specifier: workspace:*
+        version: link:../ledger
+      '@vri/watermark':
+        specifier: workspace:*
+        version: link:../watermark
+
+  cli:
+    dependencies:
+      '@vri/core':
+        specifier: workspace:*
+        version: link:../core
+
+  core: {}
+
+  ledger:
+    dependencies:
+      '@vri/core':
+        specifier: workspace:*
+        version: link:../core
+
+  watermark: {}
