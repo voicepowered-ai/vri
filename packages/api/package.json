@@ -1,6 +1,6 @@
 {
   "name": "@vri-protocol/api",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "type": "module",
   "main": "./src/server.js",
   "dependencies": {

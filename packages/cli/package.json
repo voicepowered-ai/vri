@@ -1,6 +1,6 @@
 {
   "name": "@vri-protocol/cli",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "type": "module",
   "bin": {
     "vri": "./src/index.js"
