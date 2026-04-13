@@ -5,5 +5,11 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js"
+  },
+  "dependencies": {
+    "@vri-protocol/core": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
