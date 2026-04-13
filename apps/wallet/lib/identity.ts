@@ -54,7 +54,7 @@ export type RedeemResult =
 
 export type CancelSessionResult =
   | { ok: true; sessionId: string; status: "CANCELED" }
-  | { ok: false; error: string; details?: unknown };
+  | { ok: false; error: string; code?: string; details?: unknown };
 
 function debugIdentity(message: string, extra?: Record<string, unknown>): void {
   if (!__DEV__) {
@@ -424,14 +424,16 @@ export async function cancelIdentitySession(
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
+    const code = typeof body.error === "string" ? body.error : undefined;
     debugIdentity("Cancel rejected by API", {
       sessionId,
       status: response.status,
-      error: typeof body.error === "string" ? body.error : null
+      error: code ?? null
     });
     return {
       ok: false,
-      error: mapApiError(typeof body.error === "string" ? body.error : undefined),
+      error: mapApiError(code),
+      code,
       details: body.details
     };
   }

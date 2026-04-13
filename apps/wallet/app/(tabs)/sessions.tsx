@@ -58,7 +58,7 @@ export default function SessionsScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Sesiones autorizadas</Text>
+        <Text style={styles.title}>Historial de sesiones</Text>
         {sessions.length > 0 && (
           <TouchableOpacity onPress={clearAll}>
             <Text style={styles.clearBtn}>Borrar todo</Text>

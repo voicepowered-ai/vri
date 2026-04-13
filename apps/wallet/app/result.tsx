@@ -15,7 +15,7 @@ export default function ResultScreen() {
   // Auto-dismiss after 3s on success
   useEffect(() => {
     if (isSuccess) {
-      const id = setTimeout(() => router.replace("/(tabs)/scan"), 3000);
+      const id = setTimeout(() => router.replace("/(tabs)/dashboard"), 3000);
       return () => clearTimeout(id);
     }
   }, [isSuccess]);
@@ -43,9 +43,9 @@ export default function ResultScreen() {
       ) : (
         <TouchableOpacity
           style={styles.button}
-          onPress={() => router.replace("/(tabs)/scan")}
+          onPress={() => router.replace("/(tabs)/dashboard")}
         >
-          <Text style={styles.buttonText}>Escanear de nuevo</Text>
+          <Text style={styles.buttonText}>Volver al panel</Text>
         </TouchableOpacity>
       )}
     </View>
