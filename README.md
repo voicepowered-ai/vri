@@ -23,27 +23,26 @@ System-level standard for verifiable recorded and generated audio provenance.
 
 VRI does not detect audio. It verifies cryptographic proof attached to it.
 
-## Quick Navigation
+---
 
-- [0) Real-World Workflow](#0-real-world-workflow)
-- [1) What VRI Actually Is](#1-what-vri-actually-is)
-- [Why This Matters Now](#why-this-matters-now)
-- [2) Current Project Status](#2-current-project-status)
-- [Where VRI Fits](#where-vri-fits)
-- [3) The Problem](#3-the-problem)
-- [4) The Solution](#4-the-solution)
-- [5) How It Works (Real Flow)](#5-how-it-works-real-flow)
-- [6) Core Concepts](#6-core-concepts)
-- [7) Verification Model](#7-verification-model)
-- [8) Security and Formal Assurance](#8-security-and-formal-assurance)
-- [9) Architecture](#9-architecture)
-- [10) What This Repo Contains](#10-what-this-repo-contains)
-- [11) What Is Not Included](#11-what-is-not-included)
-- [12) Demo (Input -> Audio -> Proof -> Verify VALID)](#12-demo-input---audio---proof---verify-valid)
-- [13) Roadmap](#13-roadmap)
-- [Adoption Surface](#adoption-surface)
-- [14) Additional Docs](#14-additional-docs)
-- [Long-Term Direction](#long-term-direction)
+## Monorepo Package Structure
+
+This repository uses a monorepo layout for all Node.js packages, located under the `/packages` directory:
+
+| Package    | Path               | Description                                                        |
+|------------|--------------------|--------------------------------------------------------------------|
+| core       | packages/core      | Cryptographic logic, canonicalization, proof generation/verification|
+| api        | packages/api       | HTTP API server for registration, verification, session management  |
+| cli        | packages/cli       | Command-line interface for registering/verifying audio/proofs       |
+| ledger     | packages/ledger    | Append-only event log, Merkle tree proofs, ledger anchoring         |
+| watermark  | packages/watermark | Audio watermarking (DSP, subband modulation, error correction)      |
+
+- Each package has its own README with usage details.
+- All packages are managed together via [pnpm workspaces](https://pnpm.io/workspaces).
+- To install dependencies for all packages, run `pnpm install` at the repo root.
+- To run tests for all packages: `npm test` (from the root).
+
+---
 
 ## 0) Real-World Workflow
 
@@ -69,6 +68,7 @@ This means:
 In practice:
 
 > **It works like clocking in before recording.** The actor's presence is verified, the session is opened, audio is produced under that context, and the proof follows the artifact for its entire life.
+
 
 
 ## 1) What VRI Actually Is
