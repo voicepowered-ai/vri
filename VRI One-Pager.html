@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VRI — Voice Rights Infrastructure</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#111827;display:flex;flex-direction:column;align-items:center;padding:32px 20px 60px;gap:20px;font-family:'DM Sans',sans-serif}
+img{display:block}
+
+/* Switcher */
+.switcher{display:flex;gap:6px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px}
+.switcher button{font-family:'DM Sans',sans-serif;font-size:12.5px;padding:7px 18px;border:none;border-radius:5px;cursor:pointer;transition:all .2s;background:transparent;color:rgba(255,255,255,.45)}
+.switcher button.active{background:#00E5FF;color:#0A1F3D;font-weight:600}
+
+/* A4 page shell */
+.page{width:794px;min-height:1123px;position:relative;overflow:hidden;display:none}
+.page.active{display:flex;flex-direction:column}
+
+/* ─── SHARED ATOMS ─── */
+.section-label{font-family:'Space Grotesk',sans-serif;font-size:9px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.section-label::after{content:'';flex:1;height:1px}
+
+/* ═══════════════════════════════════════════════
+   LAYOUT A — DARK EDITORIAL
+═══════════════════════════════════════════════ */
+#la{background:#0A1F3D;color:#fff;padding:40px 46px 36px;gap:0}
+
+/* Header */
+.la-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;padding-bottom:20px;border-bottom:1px solid rgba(0,229,255,.15)}
+.la-logo-wrap{display:flex;align-items:center;gap:12px}
+.la-logo-img{height:32px;object-fit:contain}
+.la-logo-fallback{width:34px;height:34px;background:#00E5FF;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;color:#0A1F3D;flex-shrink:0}
+.la-wordmark-name{font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;letter-spacing:-.3px;color:#fff;line-height:1}
+.la-wordmark-sub{font-size:9.5px;color:rgba(255,255,255,.35);letter-spacing:.08em;text-transform:uppercase;margin-top:2px}
+.la-header-tags{display:flex;gap:6px}
+.la-tag{font-family:'Space Grotesk',sans-serif;font-size:9px;padding:3px 8px;border:1px solid rgba(0,229,255,.25);border-radius:3px;color:#4FC3F7;letter-spacing:.06em;text-transform:uppercase}
+
+/* Hero */
+.la-hero{margin-bottom:24px}
+.la-hero h1{font-family:'Space Grotesk',sans-serif;font-size:32px;font-weight:700;letter-spacing:-1px;line-height:1.1;color:#fff;margin-bottom:9px}
+.la-hero h1 em{color:#00E5FF;font-style:normal}
+.la-hero p{font-size:12.5px;color:rgba(255,255,255,.55);line-height:1.65;max-width:500px}
+
+/* Section label A */
+#la .section-label{color:#00E5FF}
+#la .section-label::after{background:rgba(0,229,255,.12)}
+
+/* Flow diagram */
+.la-flow{margin-bottom:22px}
+.la-steps{display:flex;gap:0;align-items:stretch}
+.la-step{flex:1;background:rgba(255,255,255,.04);border:1px solid rgba(0,229,255,.1);border-radius:8px;padding:13px 12px;display:flex;flex-direction:column;gap:7px;position:relative}
+.la-step+.la-step{margin-left:18px}
+.la-step+.la-step::before{content:'→';position:absolute;left:-13px;top:50%;transform:translateY(-50%);color:rgba(0,229,255,.5);font-size:12px;z-index:1}
+.la-step-num{font-family:'Space Grotesk',sans-serif;font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:rgba(0,229,255,.6)}
+.la-step-icon{width:28px;height:28px;border-radius:5px;background:rgba(0,229,255,.09);display:flex;align-items:center;justify-content:center}
+.la-step-icon svg{width:13px;height:13px;fill:none;stroke:#00E5FF;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.la-step-title{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;color:#fff;line-height:1.3}
+.la-step-desc{font-size:9.5px;color:rgba(255,255,255,.4);line-height:1.45}
+
+/* Attestations */
+.la-att-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin-bottom:22px}
+.la-att{border:1px solid rgba(0,229,255,.18);border-radius:8px;padding:16px;background:rgba(0,229,255,.04)}
+.la-att-q{font-family:'Space Grotesk',sans-serif;font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:rgba(0,229,255,.7);margin-bottom:5px}
+.la-att-big{font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:700;color:#fff;margin-bottom:4px}
+.la-att-code{font-family:'Space Grotesk',sans-serif;font-size:9.5px;color:#4FC3F7;background:rgba(79,195,247,.1);padding:2px 7px;border-radius:3px;display:inline-block;margin-bottom:8px}
+.la-att-text{font-size:10px;color:rgba(255,255,255,.45);line-height:1.5}
+
+/* Bottom two columns */
+.la-bottom{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px}
+
+/* Levels */
+.la-level{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.la-level:last-child{border-bottom:none}
+.la-level-n{font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;line-height:1;min-width:18px;color:rgba(0,229,255,.25)}
+.la-level.lit .la-level-n{color:#00E5FF}
+.la-level-name{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;color:#fff;margin-bottom:2px}
+.la-level-desc{font-size:9.5px;color:rgba(255,255,255,.4);line-height:1.4}
+.la-level-badge{margin-left:auto;font-family:'Space Grotesk',sans-serif;font-size:8.5px;padding:2px 6px;border-radius:3px;white-space:nowrap;align-self:flex-start;flex-shrink:0}
+.lb1{background:rgba(255,255,255,.06);color:rgba(255,255,255,.35)}
+.lb2{background:rgba(79,195,247,.12);color:#4FC3F7}
+.lb3{background:rgba(0,229,255,.12);color:#00E5FF}
+
+/* Use cases A */
+.la-uc{display:flex;flex-direction:column;gap:0}
+.la-uc-item{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start}
+.la-uc-item:last-child{border-bottom:none}
+.la-uc-dot{width:6px;height:6px;border-radius:50%;background:#00E5FF;margin-top:4px;flex-shrink:0}
+.la-uc-name{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;color:#fff;margin-bottom:1px}
+.la-uc-desc{font-size:9.5px;color:rgba(255,255,255,.4);line-height:1.4}
+
+/* Footer A */
+.la-footer{display:flex;justify-content:space-between;align-items:flex-end;padding-top:16px;border-top:1px solid rgba(0,229,255,.12)}
+.la-footer-l{}
+.la-footer-label{font-size:9px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px}
+.la-footer-url{font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:500;color:#4FC3F7}
+.la-footer-r{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
+.qr-box{width:68px;height:68px;background:#fff;border-radius:6px;overflow:hidden;padding:4px}
+.qr-box img{width:100%;height:100%}
+.qr-caption{font-size:8.5px;color:rgba(255,255,255,.25);letter-spacing:.04em}
+
+/* ═══════════════════════════════════════════════
+   LAYOUT B — LIGHT STRUCTURED
+═══════════════════════════════════════════════ */
+#lb{background:#F7F9FC;color:#0A1F3D}
+
+.lb-header{background:#0A1F3D;padding:20px 46px;display:flex;justify-content:space-between;align-items:center}
+.lb-logo-row{display:flex;align-items:center;gap:12px}
+.lb-logo-box{width:36px;height:36px;border-radius:7px;background:#00E5FF;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;color:#0A1F3D;overflow:hidden;flex-shrink:0}
+.lb-logo-box img{width:36px;height:36px;object-fit:contain}
+.lb-logo-name{font-family:'Space Grotesk',sans-serif;font-size:19px;font-weight:700;color:#fff;letter-spacing:-.3px;line-height:1}
+.lb-logo-sub{font-size:9.5px;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+.lb-header-right{display:flex;gap:6px;align-items:center}
+.lb-v-tag{font-family:'Space Grotesk',sans-serif;font-size:9.5px;padding:3px 9px;border:1px solid rgba(0,229,255,.3);border-radius:3px;color:#4FC3F7;letter-spacing:.06em}
+
+.lb-body{padding:26px 46px 22px;display:flex;flex-direction:column;gap:20px;flex:1}
+
+/* Section label B */
+#lb .section-label{color:rgba(10,31,61,.45)}
+#lb .section-label::after{background:rgba(10,31,61,.08)}
+
+/* Intro: problem + solution */
+.lb-intro{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.lb-card{background:#fff;border:1px solid rgba(10,31,61,.08);border-radius:10px;padding:18px}
+.lb-card.dark{background:#0A1F3D;border-color:#0A1F3D}
+.lb-card-label{font-family:'Space Grotesk',sans-serif;font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:rgba(10,31,61,.38);margin-bottom:7px}
+.lb-card.dark .lb-card-label{color:rgba(255,255,255,.35)}
+.lb-card-headline{font-family:'Space Grotesk',sans-serif;font-size:14.5px;font-weight:700;color:#0A1F3D;margin-bottom:6px;line-height:1.25}
+.lb-card.dark .lb-card-headline{color:#00E5FF}
+.lb-card-body{font-size:11.5px;line-height:1.65;color:rgba(10,31,61,.6)}
+.lb-card.dark .lb-card-body{color:rgba(255,255,255,.6)}
+
+/* Flow track */
+.lb-flow-track{background:#fff;border:1px solid rgba(10,31,61,.08);border-radius:10px;overflow:hidden;display:flex}
+.lb-fstep{flex:1;padding:15px 13px;border-right:1px solid rgba(10,31,61,.06);display:flex;flex-direction:column;gap:5px}
+.lb-fstep:last-child{border-right:none}
+.lb-fstep.hl{background:rgba(0,229,255,.04)}
+.lb-fnum{font-family:'Space Grotesk',sans-serif;font-size:24px;font-weight:700;color:rgba(10,31,61,.07);line-height:1}
+.lb-fstep.hl .lb-fnum{color:rgba(0,229,255,.35)}
+.lb-ftitle{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;color:#0A1F3D;line-height:1.3}
+.lb-fdesc{font-size:9.5px;color:rgba(10,31,61,.45);line-height:1.4}
+
+/* Attestations B */
+.lb-att-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+.lb-att{border-radius:10px;padding:16px;background:#0A1F3D}
+.lb-att:nth-child(2){background:#0D2850}
+.lb-att:nth-child(3){background:#102D5A}
+.lb-att-q{font-family:'Space Grotesk',sans-serif;font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:#00E5FF;margin-bottom:5px}
+.lb-att-big{font-family:'Space Grotesk',sans-serif;font-size:18px;font-weight:700;color:#fff;margin-bottom:4px}
+.lb-att-code{font-family:'Space Grotesk',sans-serif;font-size:9.5px;color:#4FC3F7;background:rgba(79,195,247,.12);padding:2px 7px;border-radius:3px;display:inline-block;margin-bottom:8px}
+.lb-att-text{font-size:10px;color:rgba(255,255,255,.45);line-height:1.5}
+
+/* Bottom grid B */
+.lb-bottom{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.lb-levels-card,.lb-uc-card{background:#fff;border:1px solid rgba(10,31,61,.08);border-radius:10px;padding:17px 18px}
+.lb-level-row{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(10,31,61,.06)}
+.lb-level-row:last-child{border-bottom:none}
+.lb-dots{display:flex;gap:3px;margin-top:3px;flex-shrink:0}
+.dot{width:7px;height:7px;border-radius:50%}
+.df{background:#0A1F3D}
+.de{background:rgba(10,31,61,.15)}
+.lb-ln{font-family:'Space Grotesk',sans-serif;font-size:11.5px;font-weight:600;color:#0A1F3D;margin-bottom:2px}
+.lb-ld{font-size:10px;color:rgba(10,31,61,.45);line-height:1.4}
+.lb-lbadge{margin-left:auto;font-family:'Space Grotesk',sans-serif;font-size:8.5px;padding:2px 7px;border-radius:3px;white-space:nowrap;align-self:flex-start;flex-shrink:0}
+.bl1{background:rgba(10,31,61,.07);color:rgba(10,31,61,.45)}
+.bl2{background:rgba(79,195,247,.12);color:#0A7BA8}
+.bl3{background:rgba(0,229,255,.1);color:#007E8F}
+
+.lb-uc-item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid rgba(10,31,61,.06)}
+.lb-uc-item:last-child{border-bottom:none;padding-bottom:0}
+.lb-uc-bar{width:3px;min-height:32px;background:#00E5FF;border-radius:2px;flex-shrink:0;margin-top:2px}
+.lb-uc-name{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;color:#0A1F3D;margin-bottom:2px}
+.lb-uc-desc{font-size:9.5px;color:rgba(10,31,61,.45);line-height:1.4}
+
+.lb-footer{margin:0 46px 22px;padding-top:14px;border-top:1px solid rgba(10,31,61,.09);display:flex;justify-content:space-between;align-items:center}
+.lb-footer-url{font-family:'Space Grotesk',sans-serif;font-size:12px;font-weight:600;color:#0A1F3D}
+.lb-footer-label{font-size:9px;color:rgba(10,31,61,.35);text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px}
+.lb-footer-tags{display:flex;gap:5px;margin-top:8px}
+.lb-ftag{font-family:'Space Grotesk',sans-serif;font-size:9px;padding:2px 7px;border:1px solid rgba(10,31,61,.1);border-radius:3px;color:rgba(10,31,61,.4)}
+.lb-qr-wrap{display:flex;flex-direction:column;align-items:center;gap:4px}
+.lb-qr{width:62px;height:62px;border-radius:6px;overflow:hidden;border:1px solid rgba(10,31,61,.1);padding:3px;background:#fff}
+.lb-qr img{width:100%;height:100%}
+.lb-qr-cap{font-size:8.5px;color:rgba(10,31,61,.3);letter-spacing:.04em}
+
+/* Print */
+@media print{
+  body{background:#fff;padding:0;gap:0}
+  .switcher{display:none}
+  #la,#lb{display:none}
+  .page.active{display:flex!important}
+  @page{margin:0;size:A4}
+  .-webkit-print-color-adjust:exact;
+  .page{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+
+<div class="switcher">
+  <button class="active" onclick="setLayout('a')">Layout A — Oscuro</button>
+  <button onclick="setLayout('b')">Layout B — Claro</button>
+</div>
+
+<!-- ═══════ LAYOUT A ═══════ -->
+<div class="page active" id="la">
+
+  <div class="la-header">
+    <div class="la-logo-wrap">
+      <div class="la-logo-fallback" id="la-logo-container">
+        <img id="la-logo-img" class="la-logo-img" src="https://raw.githubusercontent.com/voicepowered-ai/vri/main/assets/logo-readme.png" alt="VRI" style="display:none;height:28px;object-fit:contain">
+        <span id="la-logo-text">VRI</span>
+      </div>
+      <div>
+        <div class="la-wordmark-name">Voice Rights Infrastructure</div>
+        <div class="la-wordmark-sub">Estándar de proveniencia criptográfica de audio</div>
+      </div>
+    </div>
+    <div class="la-header-tags">
+      <span class="la-tag">Protocolo v2.0</span>
+      <span class="la-tag">Apache 2.0</span>
+      <span class="la-tag">Open Source</span>
+    </div>
+  </div>
+
+  <div class="la-hero">
+    <h1>El audio digital no miente.<br><em>Ahora puedes demostrarlo.</em></h1>
+    <p>VRI añade una prueba criptográfica a cada audio en el momento de su creación — grabado o generado por IA. Cualquier tercero puede verificarla de forma independiente, sin acceso al sistema origen ni depender del productor.</p>
+  </div>
+
+  <!-- Flow -->
+  <div class="la-flow">
+    <div class="section-label">Cómo funciona</div>
+    <div class="la-steps">
+
+      <div class="la-step">
+        <span class="la-step-num">Paso 1</span>
+        <div class="la-step-icon">
+          <svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="10" y="10" width="2" height="2"/><rect x="13" y="10" width="2" height="2"/><rect x="10" y="13" width="5" height="2"/></svg>
+        </div>
+        <div class="la-step-title">Identidad QR</div>
+        <div class="la-step-desc">El actor activa su sesión antes de grabar. Identidad verificada, no asumida.</div>
+      </div>
+
+      <div class="la-step">
+        <span class="la-step-num">Paso 2</span>
+        <div class="la-step-icon">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><polyline points="8,4 8,8 11,10"/></svg>
+        </div>
+        <div class="la-step-title">Sesión de grabación</div>
+        <div class="la-step-desc">Se abre un contexto con actor, estudio y hora. Todo queda firmado desde el inicio.</div>
+      </div>
+
+      <div class="la-step">
+        <span class="la-step-num">Paso 3</span>
+        <div class="la-step-icon">
+          <svg viewBox="0 0 16 16"><line x1="1" y1="8" x2="3" y2="8"/><line x1="3" y1="5" x2="3" y2="11"/><line x1="5" y1="3" x2="5" y2="13"/><line x1="7" y1="6" x2="7" y2="10"/><line x1="9" y1="4" x2="9" y2="12"/><line x1="11" y1="6" x2="11" y2="10"/><line x1="13" y1="5" x2="13" y2="11"/><line x1="15" y1="8" x2="15" y2="8"/></svg>
+        </div>
+        <div class="la-step-title">Audio producido</div>
+        <div class="la-step-desc">Grabado por humano o generado por IA. El protocolo aplica a ambos casos por igual.</div>
+      </div>
+
+      <div class="la-step">
+        <span class="la-step-num">Paso 4</span>
+        <div class="la-step-icon">
+          <svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="8" rx="1.5"/><path d="M5 7V5a3 3 0 016 0v2"/><circle cx="8" cy="11" r="1.5"/></svg>
+        </div>
+        <div class="la-step-title">Prueba criptográfica</div>
+        <div class="la-step-desc">Hash SHA-256 + Firma Ed25519 + marca de agua embebida. El paquete viaja con el audio.</div>
+      </div>
+
+      <div class="la-step">
+        <span class="la-step-num">Paso 5</span>
+        <div class="la-step-icon">
+          <svg viewBox="0 0 16 16"><path d="M2 9l4 4 8-8"/></svg>
+        </div>
+        <div class="la-step-title">Verificación independiente</div>
+        <div class="la-step-desc">Cualquier parte verifica con datos públicos. Sin acceso al sistema origen. Sin intermediarios.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Attestations -->
+  <div class="section-label">Las tres attestaciones firmadas en cada prueba</div>
+  <div class="la-att-grid">
+    <div class="la-att">
+      <div class="la-att-q">¿Quién?</div>
+      <div class="la-att-big">Identidad del actor</div>
+      <div class="la-att-code">actor_id</div>
+      <div class="la-att-text">El actor de voz activa su sesión mediante QR antes de que comience la grabación. Su identidad queda firmada en la prueba y no puede alterarse a posteriori.</div>
+    </div>
+    <div class="la-att">
+      <div class="la-att-q">¿Cuándo y dónde?</div>
+      <div class="la-att-big">Contexto de sesión</div>
+      <div class="la-att-code">session_id</div>
+      <div class="la-att-text">Estudio, fecha, estado de verificación QR. El contexto de producción está firmado criptográficamente, no declarado por el productor.</div>
+    </div>
+    <div class="la-att">
+      <div class="la-att-q">¿Con qué modelo?</div>
+      <div class="la-att-big">Trazabilidad de IA</div>
+      <div class="la-att-code">model_id</div>
+      <div class="la-att-text">El modelo exacto de IA utilizado está firmado en la prueba y es inalterable. Para audio generado, también se registra el audio fuente de entrada.</div>
+    </div>
+  </div>
+
+  <!-- Bottom: levels + use cases -->
+  <div class="la-bottom">
+    <div>
+      <div class="section-label">Niveles de cumplimiento</div>
+      <div class="la-level lit">
+        <div class="la-level-n">1</div>
+        <div>
+          <div class="la-level-name">Firma criptográfica</div>
+          <div class="la-level-desc">Verificación offline de integridad del audio. Hash + Ed25519.</div>
+        </div>
+        <span class="la-level-badge lb1">Básico</span>
+      </div>
+      <div class="la-level lit">
+        <div class="la-level-n">2</div>
+        <div>
+          <div class="la-level-name">Marca de agua en señal</div>
+          <div class="la-level-desc">Payload embebido en el propio audio. Trazabilidad que viaja con el fichero.</div>
+        </div>
+        <span class="la-level-badge lb2">Compliance media</span>
+      </div>
+      <div class="la-level lit">
+        <div class="la-level-n">3</div>
+        <div>
+          <div class="la-level-name">Sellado RFC 3161 + Ledger</div>
+          <div class="la-level-desc">Timestamp attestation independiente y anclaje en ledger. Evidencia de alta garantía.</div>
+        </div>
+        <span class="la-level-badge lb3">Alta garantía</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Para quién</div>
+      <div class="la-uc">
+        <div class="la-uc-item">
+          <div class="la-uc-dot"></div>
+          <div>
+            <div class="la-uc-name">Estudios de doblaje y locución</div>
+            <div class="la-uc-desc">Registra audio humano con identidad verificada del actor antes de grabar.</div>
+          </div>
+        </div>
+        <div class="la-uc-item">
+          <div class="la-uc-dot"></div>
+          <div>
+            <div class="la-uc-name">Plataformas de distribución</div>
+            <div class="la-uc-desc">Verifica proveniencia de audio recibido sin acceso al sistema de origen.</div>
+          </div>
+        </div>
+        <div class="la-uc-item">
+          <div class="la-uc-dot"></div>
+          <div>
+            <div class="la-uc-name">Departamentos legales y compliance</div>
+            <div class="la-uc-desc">Evidencia técnica reproducible y auditable. Resistente a manipulación post-firma.</div>
+          </div>
+        </div>
+        <div class="la-uc-item">
+          <div class="la-uc-dot"></div>
+          <div>
+            <div class="la-uc-name">Sistemas de síntesis de voz por IA</div>
+            <div class="la-uc-desc">Trazabilidad completa del modelo y fuente de audio usados en cada generación.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="la-footer">
+    <div class="la-footer-l">
+      <div class="la-footer-label">Repositorio de referencia</div>
+      <div class="la-footer-url">github.com/voicepowered-ai/vri</div>
+    </div>
+    <div class="la-footer-r">
+      <div class="qr-box">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=https://github.com/voicepowered-ai/vri&bgcolor=ffffff&color=0A1F3D&margin=2" alt="QR VRI">
+      </div>
+      <div class="qr-caption">Escanear para acceder</div>
+    </div>
+  </div>
+
+</div><!-- /layout A -->
+
+
+<!-- ═══════ LAYOUT B ═══════ -->
+<div class="page" id="lb">
+
+  <div class="lb-header">
+    <div class="lb-logo-row">
+      <div class="lb-logo-box" id="lb-logo-container">
+        <img id="lb-logo-img" src="https://raw.githubusercontent.com/voicepowered-ai/vri/main/assets/logo-readme.png" alt="VRI" style="display:none">
+        <span id="lb-logo-text">VRI</span>
+      </div>
+      <div>
+        <div class="lb-logo-name">Voice Rights Infrastructure</div>
+        <div class="lb-logo-sub">Estándar de proveniencia criptográfica de audio</div>
+      </div>
+    </div>
+    <div class="lb-header-right">
+      <span class="lb-v-tag">Protocolo v2.0</span>
+      <span class="lb-v-tag">Apache 2.0</span>
+    </div>
+  </div>
+
+  <div class="lb-body">
+
+    <!-- Intro -->
+    <div class="lb-intro">
+      <div class="lb-card">
+        <div class="lb-card-label">El problema</div>
+        <div class="lb-card-headline">Las cadenas de audio no pueden probar su proveniencia</div>
+        <div class="lb-card-body">Con la IA generando voces indistinguibles, un fichero entregado con metadatos declarados no es verificable de forma independiente. La proveniencia se convierte en una promesa, no en una garantía técnica.</div>
+      </div>
+      <div class="lb-card dark">
+        <div class="lb-card-label">La solución</div>
+        <div class="lb-card-headline">Prueba criptográfica en el momento de creación</div>
+        <div class="lb-card-body">VRI binda criptográficamente identidad, sesión y modelo de IA en el audio desde que se produce. Cualquier tercero puede verificar esa prueba sin depender del productor ni de su infraestructura.</div>
+      </div>
+    </div>
+
+    <!-- Flow track -->
+    <div>
+      <div class="section-label">Flujo de verificación</div>
+      <div class="lb-flow-track">
+        <div class="lb-fstep">
+          <div class="lb-fnum">01</div>
+          <div class="lb-ftitle">Identidad QR</div>
+          <div class="lb-fdesc">El actor activa su sesión antes de grabar via QR. Identidad verificada, no asumida.</div>
+        </div>
+        <div class="lb-fstep">
+          <div class="lb-fnum">02</div>
+          <div class="lb-ftitle">Sesión de grabación</div>
+          <div class="lb-fdesc">Contexto de actor, estudio y hora firmado criptográficamente desde el inicio.</div>
+        </div>
+        <div class="lb-fstep hl">
+          <div class="lb-fnum">03</div>
+          <div class="lb-ftitle">Audio producido</div>
+          <div class="lb-fdesc">Grabado o generado por IA. El protocolo aplica a ambos casos por igual.</div>
+        </div>
+        <div class="lb-fstep hl">
+          <div class="lb-fnum">04</div>
+          <div class="lb-ftitle">Paquete de prueba</div>
+          <div class="lb-fdesc">Hash + Firma Ed25519 + marca de agua. Viaja con el audio de por vida.</div>
+        </div>
+        <div class="lb-fstep">
+          <div class="lb-fnum">05</div>
+          <div class="lb-ftitle">Verificación independiente</div>
+          <div class="lb-fdesc">Cualquier parte verifica con datos públicos. Sin intermediarios.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Attestations -->
+    <div>
+      <div class="section-label">Las tres attestaciones firmadas en cada prueba</div>
+      <div class="lb-att-grid">
+        <div class="lb-att">
+          <div class="lb-att-q">¿Quién?</div>
+          <div class="lb-att-big">Identidad del actor</div>
+          <div class="lb-att-code">actor_id</div>
+          <div class="lb-att-text">El actor activa su sesión mediante QR antes de grabar. Su identidad queda firmada y no puede alterarse a posteriori.</div>
+        </div>
+        <div class="lb-att">
+          <div class="lb-att-q">¿Cuándo y dónde?</div>
+          <div class="lb-att-big">Contexto de sesión</div>
+          <div class="lb-att-code">session_id</div>
+          <div class="lb-att-text">Estudio, fecha, estado de verificación QR. El contexto de producción está firmado, no declarado por el productor.</div>
+        </div>
+        <div class="lb-att">
+          <div class="lb-att-q">¿Con qué modelo?</div>
+          <div class="lb-att-big">Trazabilidad de IA</div>
+          <div class="lb-att-code">model_id</div>
+          <div class="lb-att-text">El modelo exacto de IA está firmado e inalterable. Para audio generado, también se registra el audio fuente de entrada.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom grid -->
+    <div class="lb-bottom">
+      <div class="lb-levels-card">
+        <div class="section-label" style="margin-bottom:10px">Niveles de cumplimiento</div>
+        <div class="lb-level-row">
+          <div class="lb-dots"><span class="dot df"></span><span class="dot de"></span><span class="dot de"></span></div>
+          <div><div class="lb-ln">Nivel 1 — Firma criptográfica</div><div class="lb-ld">Hash SHA-256 + Ed25519. Verificación offline de integridad.</div></div>
+          <span class="lb-lbadge bl1">Básico</span>
+        </div>
+        <div class="lb-level-row">
+          <div class="lb-dots"><span class="dot df"></span><span class="dot df"></span><span class="dot de"></span></div>
+          <div><div class="lb-ln">Nivel 2 — Marca de agua en señal</div><div class="lb-ld">Payload embebido en el audio. Trazabilidad que viaja con el fichero.</div></div>
+          <span class="lb-lbadge bl2">Compliance</span>
+        </div>
+        <div class="lb-level-row">
+          <div class="lb-dots"><span class="dot df"></span><span class="dot df"></span><span class="dot df"></span></div>
+          <div><div class="lb-ln">Nivel 3 — RFC 3161 + Ledger</div><div class="lb-ld">Timestamp attestation independiente. Evidencia forense de alta garantía.</div></div>
+          <span class="lb-lbadge bl3">Alta garantía</span>
+        </div>
+      </div>
+
+      <div class="lb-uc-card">
+        <div class="section-label" style="margin-bottom:10px">Para quién</div>
+        <div class="lb-uc-item">
+          <div class="lb-uc-bar"></div>
+          <div><div class="lb-uc-name">Estudios de doblaje y locución</div><div class="lb-uc-desc">Registra audio humano con identidad del actor verificada antes de grabar.</div></div>
+        </div>
+        <div class="lb-uc-item">
+          <div class="lb-uc-bar"></div>
+          <div><div class="lb-uc-name">Plataformas de distribución</div><div class="lb-uc-desc">Verifica proveniencia de audio recibido sin acceder al sistema de origen.</div></div>
+        </div>
+        <div class="lb-uc-item">
+          <div class="lb-uc-bar"></div>
+          <div><div class="lb-uc-name">Legal y compliance</div><div class="lb-uc-desc">Evidencia técnica reproducible y auditable. Resistente a manipulación post-firma.</div></div>
+        </div>
+        <div class="lb-uc-item">
+          <div class="lb-uc-bar"></div>
+          <div><div class="lb-uc-name">Síntesis de voz por IA</div><div class="lb-uc-desc">Trazabilidad completa del modelo y fuente de audio usados en cada generación.</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /lb-body -->
+
+  <div class="lb-footer">
+    <div class="lb-footer-l">
+      <div class="lb-footer-label">Repositorio de referencia</div>
+      <div class="lb-footer-url">github.com/voicepowered-ai/vri</div>
+      <div class="lb-footer-tags">
+        <span class="lb-ftag">Node.js</span>
+        <span class="lb-ftag">Ed25519</span>
+        <span class="lb-ftag">RFC 3161</span>
+        <span class="lb-ftag">Open Source</span>
+      </div>
+    </div>
+    <div class="lb-qr-wrap">
+      <div class="lb-qr">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=https://github.com/voicepowered-ai/vri&bgcolor=ffffff&color=0A1F3D&margin=2" alt="QR VRI">
+      </div>
+      <div class="lb-qr-cap">Escanear para acceder</div>
+    </div>
+  </div>
+
+</div><!-- /layout B -->
+
+<script>
+function setLayout(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('l'+id).classList.add('active');
+  document.querySelectorAll('.switcher button').forEach((b,i) => {
+    b.classList.toggle('active', (id === 'a' && i === 0) || (id === 'b' && i === 1));
+  });
+}
+
+// Logo fallback
+function tryLogo(imgId, textId, containerId, isBox) {
+  const img = document.getElementById(imgId);
+  const text = document.getElementById(textId);
+  img.onload = () => { img.style.display = isBox ? 'block' : 'inline'; if(text) text.style.display = 'none'; };
+  img.onerror = () => { img.style.display = 'none'; if(text) text.style.display = ''; };
+}
+tryLogo('la-logo-img','la-logo-text','la-logo-container', false);
+tryLogo('lb-logo-img','lb-logo-text','lb-logo-container', true);
+</script>
+</body>
+</html>

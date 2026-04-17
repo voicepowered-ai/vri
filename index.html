@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VRI — Voice Rights Infrastructure</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#07101F;color:#fff;font-family:'DM Sans',sans-serif;overflow:hidden}
+
+/* ─── Canvas background ─── */
+#bg{position:fixed;inset:0;z-index:0;pointer-events:none}
+
+/* ─── Radial glow ─── */
+.glow{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse 55% 45% at 50% 52%, rgba(0,229,255,.055) 0%, transparent 70%)}
+
+/* ─── Grid overlay ─── */
+.grid{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(0,229,255,.025) 1px, transparent 1px),
+                   linear-gradient(90deg, rgba(0,229,255,.025) 1px, transparent 1px);
+  background-size:64px 64px}
+
+/* ─── Site shell ─── */
+.site{position:relative;z-index:1;height:100vh;display:flex;flex-direction:column}
+
+/* ─── Nav ─── */
+nav{display:flex;justify-content:space-between;align-items:center;padding:26px 52px;
+  opacity:0;animation:fadeUp .5s ease forwards;animation-delay:.15s}
+.nav-left{display:flex;align-items:center;gap:14px}
+.logo-mark{width:34px;height:34px;background:#00E5FF;border-radius:7px;display:flex;
+  align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;
+  font-size:13px;font-weight:700;color:#0A1F3D;overflow:hidden;flex-shrink:0}
+.logo-mark img{width:34px;height:34px;object-fit:contain;display:none}
+.logo-mark span{font-size:11px;font-weight:700}
+.logo-name{font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;letter-spacing:-.2px;line-height:1}
+.logo-sub{font-size:9.5px;color:rgba(255,255,255,.3);letter-spacing:.07em;text-transform:uppercase;margin-top:2px}
+
+/* Language toggle */
+.lang{display:flex;align-items:center;gap:2px;background:rgba(255,255,255,.05);
+  border:1px solid rgba(255,255,255,.09);border-radius:7px;padding:3px}
+.lang-btn{font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;
+  padding:5px 13px;border:none;border-radius:5px;cursor:pointer;
+  transition:all .2s;background:transparent;color:rgba(255,255,255,.35);letter-spacing:.04em}
+.lang-btn.on{background:#00E5FF;color:#0A1F3D}
+
+/* ─── Main hero ─── */
+main{flex:1;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;padding:0 24px;text-align:center;gap:0}
+
+/* Pill */
+.pill{display:flex;align-items:center;gap:8px;margin-bottom:22px;
+  font-family:'Space Grotesk',sans-serif;font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:#00E5FF;
+  opacity:0;animation:fadeUp .5s ease forwards;animation-delay:.45s}
+.pill-dot{width:6px;height:6px;border-radius:50%;background:#00E5FF;
+  animation:breathe 2.4s ease-in-out infinite}
+.pill-sep{width:1px;height:12px;background:rgba(0,229,255,.25)}
+
+/* Headline */
+.h1{font-family:'Space Grotesk',sans-serif;
+  font-size:clamp(38px,5.2vw,66px);font-weight:700;
+  letter-spacing:-2px;line-height:1.04;margin-bottom:18px;text-wrap:balance}
+.h1 .l1{display:block;opacity:0;animation:fadeUp .65s cubic-bezier(.16,1,.3,1) forwards;animation-delay:.65s}
+.h1 .l2{display:block;color:#00E5FF;opacity:0;
+  animation:fadeUp .65s cubic-bezier(.16,1,.3,1) forwards;animation-delay:1.05s}
+
+/* Sub */
+.sub{font-size:clamp(13px,1.35vw,16px);color:rgba(255,255,255,.5);line-height:1.7;
+  max-width:520px;margin-bottom:30px;
+  opacity:0;animation:fadeUp .5s ease forwards;animation-delay:1.45s}
+
+/* ─── Proof card ─── */
+.proof{background:rgba(255,255,255,.04);border:1px solid rgba(0,229,255,.14);
+  border-radius:12px;padding:14px 18px;text-align:left;width:360px;margin-bottom:30px;
+  opacity:0;transform:translateY(18px);
+  animation:fadeUp .6s cubic-bezier(.16,1,.3,1) forwards;animation-delay:1.75s;
+  position:relative;overflow:hidden;backdrop-filter:blur(6px)}
+.proof::before{content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(0,229,255,.05) 0%,transparent 55%);pointer-events:none}
+
+/* Scan line sweep */
+.proof::after{content:'';position:absolute;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(0,229,255,.35),transparent);
+  animation:scan 3.5s ease-in-out infinite;animation-delay:2.8s;top:0}
+@keyframes scan{0%{top:0;opacity:0}10%{opacity:1}90%{opacity:.4}100%{top:100%;opacity:0}}
+
+.proof-head{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,.06)}
+.proof-fname{font-family:'DM Mono',monospace;font-size:10px;color:rgba(255,255,255,.3);letter-spacing:.02em}
+.proof-verified{font-family:'Space Grotesk',sans-serif;font-size:9px;font-weight:600;
+  color:#00E5A0;letter-spacing:.1em;text-transform:uppercase;
+  opacity:0;transition:opacity .6s;display:flex;align-items:center;gap:4px}
+.proof-verified::before{content:'';width:5px;height:5px;border-radius:50%;
+  background:#00E5A0;box-shadow:0 0 8px #00E5A0;flex-shrink:0}
+.proof-verified.show{opacity:1}
+
+.proof-body{font-family:'DM Mono',monospace;font-size:10.5px;line-height:1.75;
+  color:rgba(255,255,255,.4)}
+.pline{display:block;min-height:1.75em}
+.pk{color:rgba(79,195,247,.8)}
+.pv{color:#00E5FF}
+.pn{color:#4FC3F7}
+.pd{color:rgba(255,255,255,.22)}
+.pcursor{display:inline-block;width:6px;height:11px;
+  background:#00E5FF;margin-left:1px;
+  animation:blink .75s step-end infinite;vertical-align:middle;border-radius:1px}
+
+/* ─── CTAs ─── */
+.ctas{display:flex;gap:10px;
+  opacity:0;animation:fadeUp .5s ease forwards;animation-delay:2.0s}
+.btn-p{font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;
+  padding:12px 24px;background:#00E5FF;color:#0A1F3D;border:none;border-radius:8px;
+  cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:7px;
+  transition:all .22s;letter-spacing:-.1px;position:relative;overflow:hidden}
+.btn-p::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(circle at var(--mx,50%) var(--my,50%),rgba(255,255,255,.2) 0%,transparent 60%);
+  opacity:0;transition:opacity .3s}
+.btn-p:hover::before{opacity:1}
+.btn-p:hover{background:#22EEFF;transform:translateY(-1px);
+  box-shadow:0 8px 28px rgba(0,229,255,.35)}
+.arr{display:inline-block;transition:transform .2s}
+.btn-p:hover .arr{transform:translateX(3px)}
+.btn-g{font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:500;
+  padding:12px 24px;background:transparent;color:rgba(255,255,255,.65);
+  border:1px solid rgba(255,255,255,.14);border-radius:8px;
+  cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:7px;
+  transition:all .22s}
+.btn-g:hover{border-color:rgba(255,255,255,.3);color:#fff;transform:translateY(-1px)}
+
+/* ─── Footer ─── */
+footer{text-align:center;padding:18px;font-size:10.5px;
+  color:rgba(255,255,255,.18);letter-spacing:.04em;
+  opacity:0;animation:fadeIn .6s ease forwards;animation-delay:2.4s}
+
+/* ─── Keyframes ─── */
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes breathe{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.75)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+</style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+<div class="glow"></div>
+<div class="grid"></div>
+
+<div class="site">
+
+  <nav>
+    <div class="nav-left">
+      <div class="logo-mark" id="lm">
+        <img id="li" src="https://raw.githubusercontent.com/voicepowered-ai/vri/main/assets/logo-readme.png" alt="">
+        <span id="lt">VRI</span>
+      </div>
+      <div>
+        <div class="logo-name">VRI</div>
+        <div class="logo-sub" data-t="tagline">Infraestructura de Derechos de Voz</div>
+      </div>
+    </div>
+    <div class="lang">
+      <button class="lang-btn on" onclick="lang('es')">ES</button>
+      <button class="lang-btn" onclick="lang('en')">EN</button>
+    </div>
+  </nav>
+
+  <main>
+    <div class="pill">
+      <span class="pill-dot"></span>
+      <span data-t="label">Protocolo v2.0</span>
+      <span class="pill-sep"></span>
+      <span data-t="oss">Código Abierto</span>
+    </div>
+
+    <h1 class="h1">
+      <span class="l1" data-t="h1a">El audio digital puede mentir.</span>
+      <span class="l2" data-t="h1b">VRI lo hace imposible.</span>
+    </h1>
+
+    <p class="sub" data-t="sub">VRI es el estándar que hace verificable la proveniencia de cualquier audio — grabado o generado por IA — por cualquier parte, sin intermediarios.</p>
+
+    <div class="proof">
+      <div class="proof-head">
+        <span class="proof-fname">proof_package.json</span>
+        <span class="proof-verified" id="pv" data-t="verified">VERIFICADO</span>
+      </div>
+      <div class="proof-body" id="pb"></div>
+    </div>
+
+    <div class="ctas">
+      <a href="https://github.com/voicepowered-ai/vri/blob/main/DOCUMENTATION.md" target="_blank" class="btn-p">
+        <span data-t="cta1">Leer documentación</span><span class="arr">→</span>
+      </a>
+      <a href="https://github.com/voicepowered-ai/vri" target="_blank" class="btn-g">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        <span data-t="cta2">Ver en GitHub</span>
+      </a>
+    </div>
+  </main>
+
+  <footer>github.com/voicepowered-ai/vri &nbsp;·&nbsp; Apache 2.0 &nbsp;·&nbsp; Protocol v2.0</footer>
+
+</div>
+
+<script>
+// ─── i18n ────────────────────────────────────────────
+const T = {
+  es:{tagline:'Infraestructura de Derechos de Voz',label:'Protocolo v2.0',oss:'Código Abierto',
+    h1a:'El audio digital puede mentir.',h1b:'VRI lo hace imposible.',
+    sub:'VRI es el estándar que hace verificable la proveniencia de cualquier audio — grabado o generado por IA — por cualquier parte, sin intermediarios.',
+    cta1:'Leer documentación',cta2:'Ver en GitHub',verified:'VERIFICADO'},
+  en:{tagline:'Voice Rights Infrastructure',label:'Protocol v2.0',oss:'Open Source',
+    h1a:'Audio can lie.',h1b:'VRI makes it impossible.',
+    sub:'VRI is the standard that makes audio provenance verifiable — recorded or AI-generated — by any party, without intermediaries.',
+    cta1:'Read documentation',cta2:'View on GitHub',verified:'VERIFIED'}
+};
+let CL = 'es';
+function lang(l){
+  CL = l;
+  document.querySelectorAll('.lang-btn').forEach((b,i)=>b.classList.toggle('on',(l==='es'&&i===0)||(l==='en'&&i===1)));
+  document.querySelectorAll('[data-t]').forEach(el=>{ const k=el.dataset.t; if(T[l][k])el.textContent=T[l][k]; });
+  document.documentElement.lang = l;
+}
+
+// ─── Canvas waveform ──────────────────────────────────
+const cv = document.getElementById('bg');
+const cx = cv.getContext('2d');
+let wt = 0, wa = 0;
+function rsz(){ cv.width=innerWidth; cv.height=innerHeight; }
+rsz(); window.addEventListener('resize',rsz);
+
+const WV = [
+  {f:.011,a:90, s:.35,o:.075,c:'0,229,255', yo:0},
+  {f:.006,a:130,s:.22,o:.04, c:'79,195,247',yo:-20},
+  {f:.019,a:50, s:.65,o:.055,c:'0,229,255', yo:30},
+  {f:.004,a:170,s:.13,o:.03, c:'120,180,255',yo:10},
+];
+
+function draw(){
+  cx.clearRect(0,0,cv.width,cv.height);
+  const cy = cv.height*.5;
+  WV.forEach(w=>{
+    cx.beginPath();
+    cx.strokeStyle=`rgba(${w.c},${w.o*wa})`;
+    cx.lineWidth=1.2;
+    for(let x=0;x<=cv.width;x+=2){
+      const y=cy+w.yo+Math.sin(x*w.f+wt*w.s)*w.a*wa+Math.sin(x*w.f*1.8+wt*w.s*1.4)*w.a*.22*wa;
+      x===0?cx.moveTo(x,y):cx.lineTo(x,y);
+    }
+    cx.stroke();
+  });
+  wa = Math.min(1, wa+.005);
+  wt += .016;
+  requestAnimationFrame(draw);
+}
+draw();
+
+// ─── Proof card typing ───────────────────────────────
+const LINES = [
+  [{t:'{',c:'pd'}],
+  [{t:'  ',c:'pd'},{t:'"proof_type"',c:'pk'},{t:': ',c:'pd'},{t:'"GENERATED"',c:'pv'},{t:',',c:'pd'}],
+  [{t:'  ',c:'pd'},{t:'"compliance_level"',c:'pk'},{t:': ',c:'pd'},{t:'3',c:'pn'},{t:',',c:'pd'}],
+  [{t:'  ',c:'pd'},{t:'"actor_id"',c:'pk'},{t:': ',c:'pd'},{t:'"wallet_4f7a\u2026"',c:'pv'},{t:',',c:'pd'}],
+  [{t:'  ',c:'pd'},{t:'"session_id"',c:'pk'},{t:': ',c:'pd'},{t:'"rsess_9b2c\u2026"',c:'pv'},{t:',',c:'pd'}],
+  [{t:'  ',c:'pd'},{t:'"model_id"',c:'pk'},{t:': ',c:'pd'},{t:'"tts-v3"',c:'pv'},{t:',',c:'pd'}],
+  [{t:'  ',c:'pd'},{t:'"trust_level"',c:'pk'},{t:': ',c:'pd'},{t:'"HIGH"',c:'pv'}],
+  [{t:'}',c:'pd'}],
+];
+
+let li = 0;
+const PB = document.getElementById('pb');
+
+function type(){
+  if(li >= LINES.length){
+    setTimeout(()=>document.getElementById('pv').classList.add('show'), 250);
+    return;
+  }
+  const span = document.createElement('span');
+  span.className = 'pline';
+  span.innerHTML = LINES[li].map(p=>`<span class="${p.c}">${p.t}</span>`).join('');
+  PB.appendChild(span);
+  li++;
+  setTimeout(type, li===1||li===LINES.length ? 60 : 150);
+}
+setTimeout(type, 2300);
+
+// ─── Button mouse glow ────────────────────────────────
+document.querySelectorAll('.btn-p').forEach(btn=>{
+  btn.addEventListener('mousemove',e=>{
+    const r = btn.getBoundingClientRect();
+    btn.style.setProperty('--mx',((e.clientX-r.left)/r.width*100)+'%');
+    btn.style.setProperty('--my',((e.clientY-r.top)/r.height*100)+'%');
+  });
+});
+
+// ─── Logo fallback ────────────────────────────────────
+const li2 = document.getElementById('li');
+li2.onload = ()=>{ li2.style.display='block'; document.getElementById('lt').style.display='none'; };
+li2.onerror = ()=>{ li2.style.display='none'; };
+</script>
+</body>
+</html>
