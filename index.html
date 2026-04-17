@@ -162,8 +162,8 @@ footer{text-align:center;padding:18px;font-size:10.5px;
       </div>
     </div>
     <div class="lang">
-      <button class="lang-btn" onclick="lang('es')">ES</button>
-      <button class="lang-btn on" onclick="lang('en')">EN</button>
+      <button class="lang-btn" id="lang-es" type="button">ES</button>
+      <button class="lang-btn on" id="lang-en" type="button">EN</button>
     </div>
   </nav>
 
@@ -218,14 +218,17 @@ const T = {
     cta1:'Read documentation',cta2:'View on GitHub',verified:'VERIFIED'}
 };
 let CL = 'en';
-function lang(l){
+function setLanguage(l){
   CL = l;
   document.querySelectorAll('.lang-btn').forEach((b,i)=>b.classList.toggle('on',(l==='es'&&i===0)||(l==='en'&&i===1)));
   document.querySelectorAll('[data-t]').forEach(el=>{ const k=el.dataset.t; if(T[l][k])el.textContent=T[l][k]; });
   document.documentElement.lang = l;
 }
 
-lang(CL);
+document.getElementById('lang-es').addEventListener('click', ()=>setLanguage('es'));
+document.getElementById('lang-en').addEventListener('click', ()=>setLanguage('en'));
+
+setLanguage(CL);
 
 // ─── Canvas waveform ──────────────────────────────────
 const cv = document.getElementById('bg');
