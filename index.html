@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -162,8 +162,8 @@ footer{text-align:center;padding:18px;font-size:10.5px;
       </div>
     </div>
     <div class="lang">
-      <button class="lang-btn on" onclick="lang('es')">ES</button>
-      <button class="lang-btn" onclick="lang('en')">EN</button>
+      <button class="lang-btn" onclick="lang('es')">ES</button>
+      <button class="lang-btn on" onclick="lang('en')">EN</button>
     </div>
   </nav>
 
@@ -217,13 +217,15 @@ const T = {
     sub:'VRI is the standard that makes audio provenance verifiable — recorded or AI-generated — by any party, without intermediaries.',
     cta1:'Read documentation',cta2:'View on GitHub',verified:'VERIFIED'}
 };
-let CL = 'es';
+let CL = 'en';
 function lang(l){
   CL = l;
   document.querySelectorAll('.lang-btn').forEach((b,i)=>b.classList.toggle('on',(l==='es'&&i===0)||(l==='en'&&i===1)));
   document.querySelectorAll('[data-t]').forEach(el=>{ const k=el.dataset.t; if(T[l][k])el.textContent=T[l][k]; });
   document.documentElement.lang = l;
 }
+
+lang(CL);
 
 // ─── Canvas waveform ──────────────────────────────────
 const cv = document.getElementById('bg');
